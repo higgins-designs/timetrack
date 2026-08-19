@@ -4,6 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Higgins-Designs · Time</title>
+<!-- Installable to a phone home screen. Omar logs visits standing on a slab; a
+     bookmark buried in mobile Safari is not something he will reach for. -->
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./icon-180.png">
+<meta name="theme-color" content="#16424B">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="HD Time">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <style>
   /* Palette lifted from the project dashboard so the two read as one system:
      teal + clay on warm paper, not the cool grey this started with. */
@@ -161,6 +170,33 @@
   .btn.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line-strong); border-radius: 0; }
   .btn.ghost:hover { color: var(--ink); }
   .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn.sm { padding: 3px 9px; font-size: 12px; }
+
+  /* Project picker. 296 projects in a native <select> means you can only find one
+     if you already know its number: native type-ahead matches from the start of
+     the option text, and the option text starts with the number. Typing "1007"
+     for 1007 Jewell matches nothing. This matches anywhere, in either the number
+     or the address, and it starts empty — a <select> is never empty, so a stray
+     click on Start used to log time against whichever job happened to sort first. */
+  .combo { position: relative; }
+  .combo-list {
+    position: absolute; z-index: 40; left: 0; right: 0; top: 100%;
+    max-height: 302px; overflow-y: auto;
+    background: var(--card); border: 1px solid var(--line-strong); border-top: 0;
+    box-shadow: var(--shadow);
+  }
+  .combo-list .opt { padding: 7px 10px; cursor: pointer; font-size: 14px; }
+  .combo-list .opt.on { background: var(--teal); color: #fff; }
+  .combo-list .opt .n {
+    font-family: var(--mono); font-size: 12px; opacity: .7; margin-right: 8px;
+  }
+  .combo-list .opt.on .n { opacity: .85; }
+  .combo-list .grp {
+    position: sticky; top: 0; padding: 5px 10px;
+    font-size: 10px; text-transform: uppercase; letter-spacing: .12em;
+    color: var(--muted); background: var(--grey-bg); border-bottom: 1px solid var(--line);
+  }
+  .combo-list .none { padding: 12px 10px; color: var(--muted); font-size: 13px; }
 
   /* running timer */
   .timer {
@@ -441,20 +477,20 @@
 
       <div class="row" style="margin-top:14px">
         <div class="field grow">
-          <label for="proj">Project</label>
-          <select id="proj"></select>
+          <label for="proj-q">Project</label>
+          <!-- The hidden input holds the project id and keeps the id "proj", so
+               everything that reads $("proj").value still does. -->
+          <div class="combo">
+            <input type="hidden" id="proj">
+            <input id="proj-q" type="text" autocomplete="off" role="combobox"
+                   aria-expanded="false" aria-autocomplete="list"
+                   placeholder="number or address">
+            <div class="combo-list hidden" id="proj-list" role="listbox"></div>
+          </div>
         </div>
         <div class="field">
           <label for="kind">Work</label>
-          <select id="kind">
-            <option value="design">Design</option>
-            <option value="review">Review</option>
-            <option value="coordination">Coordination</option>
-            <option value="site_visit">Site visit</option>
-            <option value="rfi">RFI</option>
-            <option value="admin">Admin</option>
-            <option value="other">Other</option>
-          </select>
+          <select id="kind" data-kinds></select>
         </div>
         <div class="field grow">
           <label for="notes">Notes <span class="muted">(optional)</span></label>
@@ -469,8 +505,8 @@
     <div class="card">
       <h2>
         <span id="day-date" class="muted"></span>
-        <button class="btn ghost hidden" id="day-today-btn"
-                style="padding:3px 9px;margin-left:8px">Back to today</button>
+        <button class="btn ghost sm hidden" id="day-today-btn"
+                style="margin-left:8px">Back to today</button>
       </h2>
       <table id="day-table">
         <thead>
@@ -493,20 +529,18 @@
           <input id="m-date" type="date">
         </div>
         <div class="field grow">
-          <label for="m-proj">Project</label>
-          <select id="m-proj"></select>
+          <label for="m-proj-q">Project</label>
+          <div class="combo">
+            <input type="hidden" id="m-proj">
+            <input id="m-proj-q" type="text" autocomplete="off" role="combobox"
+                   aria-expanded="false" aria-autocomplete="list"
+                   placeholder="number or address">
+            <div class="combo-list hidden" id="m-proj-list" role="listbox"></div>
+          </div>
         </div>
         <div class="field">
           <label for="m-kind">Work</label>
-          <select id="m-kind">
-            <option value="design">Design</option>
-            <option value="review">Review</option>
-            <option value="coordination">Coordination</option>
-            <option value="site_visit">Site visit</option>
-            <option value="rfi">RFI</option>
-            <option value="admin">Admin</option>
-            <option value="other">Other</option>
-          </select>
+          <select id="m-kind" data-kinds></select>
         </div>
         <div class="field">
           <label for="m-hours">Hours</label>
@@ -524,10 +558,26 @@
     <div class="card">
       <h2>
         Week
-        <button class="btn ghost" id="wk-prev" style="padding:3px 9px;margin-left:8px">&larr;</button>
+        <button class="btn ghost sm" id="wk-prev" style="margin-left:8px">&larr;</button>
         <span id="wk-label" class="muted"></span>
-        <button class="btn ghost" id="wk-next" style="padding:3px 9px">&rarr;</button>
+        <button class="btn ghost sm" id="wk-next">&rarr;</button>
       </h2>
+      <!-- A row only exists for a project that already has hours this week, so
+           without this there is no way to reach a project you have not logged
+           against yet — which on a fresh install is all of them. -->
+      <div class="row" style="margin:14px 14px 12px">
+        <div class="field grow">
+          <label for="wk-proj-q">Add a row for</label>
+          <div class="combo">
+            <input type="hidden" id="wk-proj">
+            <input id="wk-proj-q" type="text" autocomplete="off" role="combobox"
+                   aria-expanded="false" aria-autocomplete="list"
+                   placeholder="number or address">
+            <div class="combo-list hidden" id="wk-proj-list" role="listbox"></div>
+          </div>
+        </div>
+        <button class="btn" id="wk-addrow">Add row</button>
+      </div>
       <div class="grid-wrap">
         <table class="grid" id="week-table">
           <thead><tr id="week-head"></tr></thead>
@@ -537,11 +587,13 @@
       </div>
       <p class="small muted" style="margin:12px 0 0">
         Type hours into a cell to correct or backfill a day, or <b>0</b> to clear it;
-        leaving a cell blank changes nothing. Cells holding timer time show it in grey
-        &mdash; you can raise the total and the difference is kept as a manual entry,
-        but you cannot overwrite recorded time. A cell with a <b>running</b> timer is
-        locked until you stop it. Click any cell to open that day above, where
-        individual entries can be edited or deleted.
+        leaving a cell blank changes nothing. <b>Enter</b> saves and drops to the next
+        project, <b>shift+Enter</b> goes back up and <b>Tab</b> moves across the week,
+        so a whole week can be filled without the mouse. Cells holding timer time show
+        it in grey &mdash; you can raise the total and the difference is kept as a
+        manual entry, but you cannot overwrite recorded time. A cell with a
+        <b>running</b> timer is locked until you stop it. <b>Click</b> a cell to open
+        that day above, where individual entries can be edited or deleted.
       </p>
     </div>
     </section>
@@ -569,8 +621,14 @@
             <input id="v-end" type="time">
           </div>
           <div class="field grow">
-            <label for="v-proj">Project</label>
-            <select id="v-proj"></select>
+            <label for="v-proj-q">Project</label>
+            <div class="combo">
+              <input type="hidden" id="v-proj">
+              <input id="v-proj-q" type="text" autocomplete="off" role="combobox"
+                     aria-expanded="false" aria-autocomplete="list"
+                     placeholder="number or address">
+              <div class="combo-list hidden" id="v-proj-list" role="listbox"></div>
+            </div>
           </div>
         </div>
         <div class="row" style="margin-top:10px">
@@ -696,8 +754,14 @@
         <h2 style="margin-bottom:10px">Projects for <span id="assign-who"></span></h2>
         <div class="row">
           <div class="field grow">
-            <label for="assign-proj">Add a project</label>
-            <select id="assign-proj"></select>
+            <label for="assign-proj-q">Add a project</label>
+            <div class="combo">
+              <input type="hidden" id="assign-proj">
+              <input id="assign-proj-q" type="text" autocomplete="off" role="combobox"
+                     aria-expanded="false" aria-autocomplete="list"
+                     placeholder="number or address">
+              <div class="combo-list hidden" id="assign-proj-list" role="listbox"></div>
+            </div>
           </div>
           <button class="btn" id="assign-add">Assign</button>
           <button class="btn ghost" id="assign-close">Done</button>

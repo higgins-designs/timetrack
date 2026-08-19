@@ -21,6 +21,9 @@ let weekEntries = [];     // FINISHED entries for the week
 let weekRunning = [];     // LIVE timers in the week - must be visible to the grid
 let tick = null;
 const savingCells = new Set();
+// Grid rows for projects with no hours yet this week. Without these the grid can
+// only show work you have already logged, which on an empty tracker is nothing.
+const extraRows = new Set();
 
 // ------------------------------------------------------------- helpers
 
@@ -68,6 +71,12 @@ const KIND_LABEL = {
   design: "Design", review: "Review", coordination: "Coordination",
   site_visit: "Site visit", rfi: "RFI", admin: "Admin", other: "Other",
 };
+// One source for the work kinds. There used to be three — this map plus two
+// hand-written <select> blocks in the markup — which had to be kept in step.
+document.querySelectorAll("select[data-kinds]").forEach((sel) => {
+  sel.innerHTML = Object.entries(KIND_LABEL)
+    .map(([k, l]) => `<option value="${k}">${l}</option>`).join("");
+});
 
 let toastTimer = null;
 function toast(msg, kind = "ok") {
@@ -213,34 +222,152 @@ function renderProjectContext() {
         <b>Next:</b> ${escapeHtml(p.next_action)}</div>` : ""}`;
 }
 
-$("proj").addEventListener("change", renderProjectContext);
+$("proj").addEventListener("change", () => {
+  renderProjectContext();
+  // Picking a project here also gives it a row in the week grid, so the fastest
+  // surface in the app is reachable without first logging time the slow way.
+  if ($("proj").value) { extraRows.add(String($("proj").value)); renderWeek(); }
+});
 
+// ------------------------------------------------------- project combobox
 // Every project you have access to, including closed ones — a warranty visit or
 // a late correction lands on a job that closed months ago, and it still has to
 // be loggable. Grouped so the live work stays at the top of a long list.
-function fillProjectSelect(sel, list) {
-  if (!sel) return;
-  const keep = sel.value;
-  sel.innerHTML = "";
-  const groups = [
-    ["Active", list.filter((p) => !p.is_overhead && p.status === "active")],
-    ["On hold", list.filter((p) => !p.is_overhead && p.status === "on_hold")],
-    ["Overhead", list.filter((p) => p.is_overhead)],
-    ["Closed", list.filter((p) => !p.is_overhead && p.status === "closed")],
-  ];
-  for (const [label, items] of groups) {
-    if (!items.length) continue;
-    const g = document.createElement("optgroup");
-    g.label = `${label} (${items.length})`;
-    for (const p of items) {
-      const o = document.createElement("option");
-      o.value = p.id;
-      o.textContent = projLabel(p);
-      g.appendChild(o);
-    }
-    sel.appendChild(g);
+//
+// This replaced a <select>. With 296 projects a native picker is unusable: its
+// type-ahead matches from the start of the option text, the text starts with the
+// project number, and nobody remembers that 1007 Jewell is 26036. It also always
+// has something selected, so a hurried click on Start logged an hour against
+// whichever job sorted first. This starts empty and matches anywhere.
+
+const combos = new Map();       // hidden input id -> { list, filtered, hi }
+
+const GROUP_ORDER = [
+  ["Active", (p) => !p.is_overhead && p.status === "active"],
+  ["On hold", (p) => !p.is_overhead && p.status === "on_hold"],
+  ["Overhead", (p) => p.is_overhead],
+  ["Closed", (p) => !p.is_overhead && p.status === "closed"],
+];
+
+function comboMatches(list, q) {
+  const needle = q.trim().toLowerCase();
+  const out = [];
+  for (const [label, test] of GROUP_ORDER) {
+    const items = list.filter((p) => test(p) &&
+      (!needle || `${p.number || ""} ${p.name}`.toLowerCase().includes(needle)));
+    if (items.length) out.push([label, items]);
   }
-  if (keep) sel.value = keep;
+  return out;
+}
+
+function fillProjectCombo(hidden, list) {
+  if (!hidden) return;
+  const c = combos.get(hidden.id);
+  if (c) { c.source = list; return; }
+  attachCombo(hidden, list);
+}
+
+function attachCombo(hidden, list) {
+  const q = $(`${hidden.id}-q`);
+  const box = $(`${hidden.id}-list`);
+  if (!q || !box) return;
+
+  const c = { source: list, flat: [], hi: -1, open: false };
+  combos.set(hidden.id, c);
+
+  // Prefer this combo's own list: the assignment picker is loaded from a wider
+  // query than the global `projects`, so labelFor can come up empty there.
+  const labelOf = (id) => {
+    const p = c.source.find((x) => String(x.id) === String(id));
+    return p ? projLabel(p) : labelFor(id);
+  };
+
+  function open() {
+    render();
+    box.classList.remove("hidden");
+    q.setAttribute("aria-expanded", "true");
+    c.open = true;
+  }
+  function close() {
+    box.classList.add("hidden");
+    q.setAttribute("aria-expanded", "false");
+    c.open = false;
+    c.hi = -1;
+  }
+  function render() {
+    const groups = comboMatches(c.source, q.value);
+    c.flat = groups.flatMap(([, items]) => items);
+    if (c.hi >= c.flat.length) c.hi = c.flat.length - 1;
+    if (!c.flat.length) {
+      box.innerHTML = `<div class="none">No project matches that.</div>`;
+      return;
+    }
+    let i = -1;
+    box.innerHTML = groups.map(([label, items]) =>
+      `<div class="grp">${label} (${items.length})</div>` +
+      items.map((p) => {
+        i += 1;
+        return `<div class="opt${i === c.hi ? " on" : ""}" data-i="${i}" role="option">${
+          p.is_overhead ? "" : `<span class="n">${escapeHtml(p.number || "")}</span>`
+        }${escapeHtml(p.name)}</div>`;
+      }).join("")).join("");
+    const on = box.querySelector(".opt.on");
+    if (on) on.scrollIntoView({ block: "nearest" });
+  }
+  function choose(i) {
+    const p = c.flat[i];
+    if (!p) return;
+    hidden.value = p.id;
+    q.value = projLabel(p);
+    close();
+    hidden.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  q.addEventListener("focus", open);
+  q.addEventListener("input", () => {
+    // Typing invalidates the selection: the text and the id must never disagree,
+    // or a stale id gets submitted with a label that says something else.
+    if (hidden.value) { hidden.value = ""; hidden.dispatchEvent(new Event("change", { bubbles: true })); }
+    c.hi = q.value.trim() ? 0 : -1;
+    if (!c.open) open(); else render();
+  });
+  q.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!c.open) return open();
+      c.hi = Math.max(0, Math.min(c.flat.length - 1, c.hi + (e.key === "ArrowDown" ? 1 : -1)));
+      render();
+    } else if (e.key === "Enter") {
+      if (c.open && c.hi >= 0) { e.preventDefault(); choose(c.hi); }
+    } else if (e.key === "Escape") {
+      if (c.open) { e.preventDefault(); close(); }
+    }
+  });
+  q.addEventListener("blur", () => {
+    // Let a click on an option land first.
+    setTimeout(() => {
+      close();
+      // Snap the text back to whatever is actually selected, so a half-typed
+      // query never sits there looking like a choice.
+      q.value = hidden.value ? labelOf(hidden.value) : "";
+    }, 120);
+  });
+  box.addEventListener("mousedown", (e) => {
+    const opt = e.target.closest(".opt");
+    if (!opt) return;
+    e.preventDefault();            // keep focus, so blur does not undo the pick
+    choose(Number(opt.dataset.i));
+  });
+}
+
+// Set a combo's value from code — used when a form needs to preselect a job.
+function setCombo(hiddenId, projectId) {
+  const hidden = $(hiddenId);
+  const q = $(`${hiddenId}-q`);
+  if (!hidden || !q) return;
+  hidden.value = projectId == null ? "" : String(projectId);
+  q.value = projectId == null ? "" : labelFor(projectId);
+  hidden.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
 async function loadProjects() {
@@ -256,8 +383,9 @@ async function loadProjects() {
 
   if (!projects.length) toast("No projects are assigned to you yet.", "warn");
 
-  fillProjectSelect($("proj"), projects);
-  fillProjectSelect($("m-proj"), projects);
+  fillProjectCombo($("proj"), projects);
+  fillProjectCombo($("m-proj"), projects);
+  fillProjectCombo($("wk-proj"), projects);
 }
 
 // Labels for projects that have time logged but have dropped out of the picker
@@ -443,8 +571,7 @@ function renderDay() {
           ${e.billable ? "" : '<span class="tag nb">non-billable</span>'}</td>
       <td class="small muted">${e.notes ? escapeHtml(e.notes) : ""}</td>
       <td class="num">${hrs(e.minutes)}</td>
-      <td class="right"><button class="btn ghost" data-del="${e.id}"
-            style="padding:3px 9px;font-size:12px">Delete</button></td>`;
+      <td class="right"><button class="btn ghost sm" data-del="${e.id}">Delete</button></td>`;
     body.appendChild(tr);
   }
   if (done.length) {
@@ -467,9 +594,12 @@ async function deleteEntry(id) {
   const e = dayEntries.find((x) => String(x.id) === String(id));
   const what = e ? `${hrs(e.minutes)} h on ${labelFor(e.project_id)}` : "this entry";
   if (!confirm(`Delete ${what}? This cannot be undone.`)) return;
-  const { error } = await sb.from("time_entries").delete().eq("id", id);
+  // .select() so an RLS-filtered delete cannot report success having matched
+  // nothing — "Deleted." on a row that is still there is worse than an error.
+  const { data, error } = await sb.from("time_entries").delete().eq("id", id).select("id");
   if (error) return fail("Deleting the entry", error);
   await Promise.all([loadDay(), loadWeek()]);
+  if (!data || !data.length) return toast("Nothing was deleted — that entry is not yours.", "warn");
   toast("Entry deleted.");
 }
 
@@ -531,12 +661,24 @@ async function loadWeek() {
 function weekRows() {
   const ids = new Set(weekEntries.map((e) => String(e.project_id)));
   for (const e of weekRunning) ids.add(String(e.project_id));
+  for (const id of extraRows) ids.add(String(id));
   if ($("proj").value) ids.add(String($("proj").value));
   // Built from the entries, NOT from the picker, so hours on a project that has
   // since been closed or unassigned still appear and still count.
   return [...ids].map((id) => ({ id, label: labelFor(id) }))
                  .sort((a, b) => a.label.localeCompare(b.label));
 }
+
+$("wk-addrow").addEventListener("click", () => {
+  const id = $("wk-proj").value;
+  if (!id) return toast("Pick a project first.", "err");
+  extraRows.add(String(id));
+  setCombo("wk-proj", null);
+  renderWeek();
+  const cell = document.querySelector(
+    `#week-body input[data-proj="${id}"][data-date="${ymd(new Date())}"]`);
+  if (cell) cell.focus();          // land on today, ready to type
+});
 
 function renderWeek() {
   const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
@@ -567,7 +709,7 @@ function renderWeek() {
         (e) => String(e.project_id) === r.id && e.work_date === key);
       const timerMin = mine.filter((e) => e.started_at).reduce((a, e) => a + e.minutes, 0);
       const totalMin = mine.reduce((a, e) => a + e.minutes, 0);
-      const val = totalMin ? (totalMin / 60).toFixed(2).replace(/\.?0+$/, "") : "";
+      const val = hrs(totalMin);
       cells += `<td class="num ${timerMin && timerMin === totalMin ? "locked" : ""}">
         <input type="number" step="0.25" min="0" value="${val}"
                data-proj="${r.id}" data-date="${key}" data-timer="${timerMin}"
@@ -592,12 +734,34 @@ function renderWeek() {
 
   body.querySelectorAll("input[data-proj]").forEach((inp) => {
     inp.addEventListener("change", () => saveCell(inp));
-    // Clicking a day opens that day in the entry panel above, which is the only
-    // way to correct or delete a timer entry on a past day.
-    inp.addEventListener("focus", async () => {
+    // Typing replaces the cell rather than appending to what is already there.
+    inp.addEventListener("focus", () => inp.select());
+    // Opening the day panel is on CLICK, not focus. On focus it fired once per
+    // cell while tabbing across a row — seven round trips and the panel above
+    // jumping under your hands, which made keyboard entry unusable.
+    inp.addEventListener("click", async () => {
       if (inp.dataset.date !== dayDate) { dayDate = inp.dataset.date; await loadDay(); }
     });
+    inp.addEventListener("keydown", (e) => gridKey(e, inp));
   });
+}
+
+// Enter moves down the column, shift+Enter up; Tab already moves across. Leaving
+// the cell is what fires `change`, so the move saves the value on its way out.
+//
+// Deliberately not bound to the up/down arrows: these are number inputs, where
+// those keys natively step the value, and silently turning "nudge to 2.5" into
+// "jump to another project" is the kind of thing you only notice at invoicing.
+function gridKey(e, inp) {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  const col = [...document.querySelectorAll(
+    `#week-body input[data-date="${inp.dataset.date}"]`)];
+  const dir = e.shiftKey ? -1 : 1;
+  for (let i = col.indexOf(inp) + dir; i >= 0 && i < col.length; i += dir) {
+    if (!col[i].disabled) return col[i].focus();
+  }
+  inp.blur();                      // end of the column: commit and step out
 }
 
 // Totals come from weekEntries directly, so they can never under-report what a
@@ -758,11 +922,34 @@ async function loadOverview() {
   await ensureLabels(commitments.map((c) => c.project_id).filter(Boolean));
   await ensureLabels((vis || []).map((v) => v.project_id));
 
+  seedWeekRows(commitments, vis || []);
   renderOvTiles(commitments);
   renderOvAttention(commitments);
   renderOvSchedule(vis || []);
   renderOvWorking(commitments);
   renderOvPhases();
+}
+
+// An empty week grid is the whole adoption problem: the fastest way to log time
+// is a grid cell, and a cell only exists for a project you have already logged
+// against. So open the week on the jobs that are actually live — anything with a
+// commitment due about now, plus anything with a site visit this week. Seeded
+// once, and only ever added to, so a row you dismissed by not typing in it does
+// not come back mid-week.
+let seededWeekRows = false;
+function seedWeekRows(commitments, visits) {
+  if (seededWeekRows) return;
+  seededWeekRows = true;
+
+  const hot = new Set(["overdue", "today", "this_week"]);
+  for (const c of commitments) {
+    if (c.project_id && hot.has(c.bucket)) extraRows.add(String(c.project_id));
+  }
+  const weekEnd = ymd(addDays(weekStart, 6));
+  for (const v of visits) {
+    if (v.project_id && v.visit_date <= weekEnd) extraRows.add(String(v.project_id));
+  }
+  if (extraRows.size) renderWeek();
 }
 
 function renderOvTiles(cs) {
@@ -1050,8 +1237,7 @@ function renderVisits() {
       <td class="num small">${travel}</td>
       <td class="num small admin-only-col${me.role === "admin" ? "" : " hidden"}">${rate}</td>
       <td>${cal}</td>
-      <td class="right"><button class="btn ghost" data-vdel="${v.id}"
-            style="padding:3px 9px;font-size:12px">Delete</button></td>`;
+      <td class="right"><button class="btn ghost sm" data-vdel="${v.id}">Delete</button></td>`;
     body.appendChild(tr);
   }
 
@@ -1062,8 +1248,9 @@ function renderVisits() {
 }
 
 async function saveVisit(id, patch) {
-  const { error } = await sb.from("site_visits").update(patch).eq("id", id);
+  const { data, error } = await sb.from("site_visits").update(patch).eq("id", id).select("id");
   if (error) fail("Saving that visit", error);
+  else if (!data || !data.length) toast("That change did not save — the visit is not yours to edit.", "warn");
   else toast("Saved.");
   await loadVisits();
 }
@@ -1077,9 +1264,10 @@ async function deleteVisit(id) {
            `or run sync-visits.mjs which will report it as orphaned.`;
   }
   if (!confirm(msg)) return;
-  const { error } = await sb.from("site_visits").delete().eq("id", id);
+  const { data, error } = await sb.from("site_visits").delete().eq("id", id).select("id");
   if (error) return fail("Deleting the visit", error);
   await loadVisits();
+  if (!data || !data.length) return toast("Nothing was deleted — that visit is not yours.", "warn");
   toast("Visit deleted.");
 }
 
@@ -1124,7 +1312,7 @@ $("v-filter-mine").addEventListener("change", () => { renderVisitStats(); render
 function initVisitForm() {
   $("v-date").value = ymd(new Date());
   $("visit-types").innerHTML = COMMON_TYPES.map((t) => `<option value="${t}">`).join("");
-  fillProjectSelect($("v-proj"), projects);
+  fillProjectCombo($("v-proj"), projects);
   // Only admins can see the whole roster, so everyone else can only book themselves.
   const who = $("v-who");
   who.innerHTML = (people.length ? people : [me])
@@ -1175,8 +1363,7 @@ async function loadPeople() {
       }</td>
       <td class="right">${
         p.role === "contractor"
-          ? `<button class="btn ghost" data-assign="${p.id}"
-               style="padding:3px 9px;font-size:12px">Projects</button>`
+          ? `<button class="btn ghost sm" data-assign="${p.id}">Projects</button>`
           : `<span class="small muted">—</span>`
       }</td>`;
     body.appendChild(tr);
@@ -1193,10 +1380,11 @@ async function loadPeople() {
 }
 
 async function savePerson(id, patch) {
-  const { error } = await sb.from("employees").update(patch).eq("id", id);
+  const { data, error } = await sb.from("employees").update(patch).eq("id", id).select("id");
   // Reload either way: on failure the control must snap back to the truth
   // rather than sit there showing a change that never landed.
   if (error) fail("Saving that person", error);
+  else if (!data || !data.length) toast("That change did not save — you cannot edit this person.", "warn");
   else toast("Saved.");
   await loadPeople();
 }
@@ -1217,7 +1405,7 @@ async function openAssign(employeeId) {
     .order("number", { ascending: false });
   if (error) return fail("Loading projects", error);
 
-  fillProjectSelect($("assign-proj"), all || []);
+  fillProjectCombo($("assign-proj"), all || []);
 
   await renderAssignments(employeeId);
 }

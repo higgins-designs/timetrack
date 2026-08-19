@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Higgins-Designs Time">
+  <!-- The masthead in miniature: teal-dk field, white monogram, clay rule under
+       it. The rule is inset rather than run to the edge so a maskable crop on
+       Android cannot slice it off. -->
+  <rect width="512" height="512" fill="#16424B"/>
+  <text x="256" y="286" fill="#FFFFFF" font-family="Segoe UI,system-ui,sans-serif"
+        font-size="190" font-weight="700" letter-spacing="-6"
+        text-anchor="middle">HD</text>
+  <rect x="146" y="330" width="220" height="16" fill="#C08D7C"/>
+</svg>
