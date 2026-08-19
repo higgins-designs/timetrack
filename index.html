@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Higgins-Designs · Time</title>
+<style>
+  :root {
+    --teal: #1E5862;
+    --teal-dk: #16434b;
+    --teal-lt: #2d7683;
+    --bg: #f4f6f6;
+    --card: #ffffff;
+    --ink: #1a1f21;
+    --muted: #647175;
+    --line: #dde3e4;
+    --ok: #1f7a4d;
+    --warn: #a8620f;
+    --err: #a32020;
+    --radius: 10px;
+    --shadow: 0 1px 2px rgba(16,32,36,.06), 0 4px 14px rgba(16,32,36,.05);
+    --picker-filter: none;
+    /* Tells the browser to draw native controls - date/time pickers, the select
+       arrow, scrollbars - in the matching theme. Without it they stay light on a
+       dark page and the text disappears. */
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12181a; --card: #1a2225; --ink: #e8edee; --muted: #93a1a5;
+      --line: #2b3639; --teal-lt: #4aa2b2;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 14px rgba(0,0,0,.3);
+      --picker-filter: invert(1) brightness(1.6);
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -.01em; }
+  button { font: inherit; cursor: pointer; }
+  input, select, textarea { font: inherit; color: inherit; }
+
+  header.app {
+    background: var(--teal); color: #fff; padding: 10px 16px;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    position: sticky; top: 0; z-index: 20;
+  }
+  header.app .brand { font-weight: 700; letter-spacing: .06em; font-size: 13px; }
+  header.app .spacer { flex: 1; }
+  header.app .who { font-size: 13px; opacity: .9; }
+  header.app button {
+    background: rgba(255,255,255,.14); color: #fff; border: 1px solid rgba(255,255,255,.25);
+    border-radius: 6px; padding: 5px 10px; font-size: 13px;
+  }
+  header.app button:hover { background: rgba(255,255,255,.24); }
+
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: 16px; margin-bottom: 16px;
+  }
+  .card > h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--muted); margin-bottom: 12px;
+  }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .field label { font-size: 12px; color: var(--muted); }
+  .field.grow { flex: 1 1 220px; }
+  /* Style EVERY field, not an enumerated list of types. The old selector listed
+     input[type=text] and missed both <input list=...> (no type attribute, so it
+     never matched) and type=time entirely - those fell back to browser defaults
+     and went unreadable in dark mode. */
+  select, textarea,
+  input:not([type=checkbox]):not([type=radio]):not([type=submit]):not([type=button]) {
+    background: var(--bg); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 7px;
+    padding: 9px 10px; min-width: 0; width: 100%;
+  }
+  select:focus, input:focus, textarea:focus { outline: 2px solid var(--teal-lt); outline-offset: -1px; }
+  /* Native date/time pickers and the select arrow are drawn by the browser; this
+     is what makes them follow the page theme instead of staying light. */
+  input::-webkit-calendar-picker-indicator { filter: var(--picker-filter); cursor: pointer; }
+
+  .btn {
+    background: var(--teal); color: #fff; border: 0; border-radius: 7px;
+    padding: 10px 16px; font-weight: 600;
+  }
+  .btn:hover { background: var(--teal-dk); }
+  .btn.stop { background: var(--err); }
+  .btn.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+  .btn.ghost:hover { color: var(--ink); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* running timer */
+  .timer {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 14px 16px; border-radius: var(--radius);
+    background: linear-gradient(180deg, var(--teal) 0%, var(--teal-dk) 100%); color: #fff;
+  }
+  .timer .elapsed {
+    font-variant-numeric: tabular-nums; font-size: 30px; font-weight: 700; letter-spacing: -.02em;
+  }
+  .timer .what { flex: 1; min-width: 180px; }
+  .timer .what .proj { font-weight: 600; }
+  .timer .what .sub { font-size: 13px; opacity: .8; }
+  .timer.idle { background: var(--card); color: var(--muted); border: 1px dashed var(--line); }
+
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: 0; }
+  .totals td { font-weight: 700; border-top: 2px solid var(--line); }
+
+  .grid-wrap { overflow-x: auto; }
+  table.grid input {
+    width: 62px; text-align: right; padding: 6px 8px;
+    font-variant-numeric: tabular-nums;
+  }
+  table.grid td.locked input { background: transparent; border-color: transparent; color: var(--muted); }
+  .tag {
+    display: inline-block; font-size: 11px; padding: 2px 7px; border-radius: 20px;
+    background: var(--bg); border: 1px solid var(--line); color: var(--muted);
+  }
+  .tag.nb { color: var(--warn); border-color: var(--warn); }
+
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  .right { text-align: right; }
+  .empty { color: var(--muted); padding: 18px 0; text-align: center; }
+
+  #toast {
+    position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(20px);
+    background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 8px;
+    box-shadow: var(--shadow); opacity: 0; transition: .2s; pointer-events: none;
+    max-width: 90vw; z-index: 50; font-size: 14px;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.err { background: var(--err); color: #fff; }
+  #toast.warn { background: var(--warn); color: #fff; }
+
+  /* tabs */
+  nav.tabs { display: flex; gap: 4px; margin: 4px 0 16px; flex-wrap: wrap; }
+  nav.tabs .tab {
+    background: transparent; border: 1px solid transparent; border-radius: 8px;
+    padding: 8px 15px; color: var(--muted); font-weight: 600; font-size: 14px;
+  }
+  nav.tabs .tab:hover { color: var(--ink); background: var(--card); }
+  nav.tabs .tab.active {
+    background: var(--card); color: var(--teal-lt);
+    border-color: var(--line); box-shadow: var(--shadow);
+  }
+
+  /* summary tiles */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+  .stat {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 11px 13px;
+  }
+  .stat .n { font-size: 25px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .stat.pass .n { color: var(--ok); }
+  .stat.fail .n { color: var(--err); }
+  .bar { display: flex; height: 6px; border-radius: 4px; overflow: hidden; margin-top: 10px; background: var(--line); }
+  .bar span { display: block; }
+  table.grid input:disabled { background: var(--line); cursor: not-allowed; opacity: .8; }
+
+  /* login */
+  #login { max-width: 380px; margin: 12vh auto; }
+  #login .card { padding: 24px; }
+  #login h1 { color: var(--teal); font-size: 20px; margin-bottom: 4px; }
+  #login .field { margin-bottom: 12px; }
+  #login .btn { width: 100%; }
+
+  .hidden { display: none !important; }
+
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 13px;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 20px;
+    padding: 4px 6px 4px 12px;
+  }
+  .chip button {
+    border: 0; background: transparent; color: var(--muted); font-size: 15px;
+    line-height: 1; padding: 2px 4px; border-radius: 50%;
+  }
+  .chip button:hover { color: var(--err); background: var(--line); }
+  table select, table input[type=number] { padding: 5px 8px; }
+
+  @media (max-width: 620px) {
+    main { padding: 10px; }
+    .card { padding: 12px; }
+    .timer .elapsed { font-size: 26px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ------------------------------------------------------------ login -->
+<!-- Visible by default: if boot() ever fails, the user lands here with a message
+     rather than on a blank page with both panes hidden. -->
+<div id="login">
+  <div class="card">
+    <h1>Higgins-Designs</h1>
+    <p class="muted small" style="margin:0 0 18px">Time tracking</p>
+    <form id="login-form">
+      <div class="field signup-only hidden">
+        <label for="fullname">Your name</label>
+        <input id="fullname" type="text" autocomplete="name">
+      </div>
+      <div class="field">
+        <label for="email">Email</label>
+        <input id="email" type="email" autocomplete="username" required>
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" required>
+      </div>
+      <button class="btn" type="submit" id="login-btn">Sign in</button>
+    </form>
+    <p class="small" style="margin:14px 0 0">
+      <a href="#" id="toggle-mode" style="color:var(--teal-lt)">Need an account? Sign up</a>
+    </p>
+    <p id="login-msg" class="small" style="margin:12px 0 0"></p>
+  </div>
+</div>
+
+<!-- -------------------------------------------------------------- app -->
+<div id="app" class="hidden">
+  <header class="app">
+    <span class="brand">HIGGINS-DESIGNS</span>
+    <span class="muted" style="color:rgba(255,255,255,.7);font-size:13px">Time</span>
+    <span class="spacer"></span>
+    <span class="who" id="who"></span>
+    <button id="signout">Sign out</button>
+  </header>
+
+  <main>
+    <nav class="tabs" id="tabs">
+      <button class="tab active" data-tab="time">Time</button>
+      <button class="tab" data-tab="visits">Site visits</button>
+      <button class="tab hidden" data-tab="people" id="tab-people-btn">People</button>
+    </nav>
+
+    <section id="panel-time">
+    <!-- running timer -->
+    <div class="card">
+      <h2>Active</h2>
+      <div id="timer" class="timer idle">
+        <div class="elapsed" id="elapsed">0:00:00</div>
+        <div class="what" id="timer-what"><div class="proj">Nothing running</div>
+          <div class="sub">Pick a project below and start the clock.</div></div>
+        <button class="btn stop hidden" id="stop-btn">Stop</button>
+      </div>
+
+      <div class="row" style="margin-top:14px">
+        <div class="field grow">
+          <label for="proj">Project</label>
+          <select id="proj"></select>
+        </div>
+        <div class="field">
+          <label for="kind">Work</label>
+          <select id="kind">
+            <option value="design">Design</option>
+            <option value="review">Review</option>
+            <option value="coordination">Coordination</option>
+            <option value="site_visit">Site visit</option>
+            <option value="rfi">RFI</option>
+            <option value="admin">Admin</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div class="field grow">
+          <label for="notes">Notes <span class="muted">(optional)</span></label>
+          <input id="notes" type="text" placeholder="e.g. foundation details, pier schedule">
+        </div>
+        <button class="btn" id="start-btn">Start</button>
+      </div>
+    </div>
+
+    <!-- the selected day (defaults to today; clicking a week cell moves it) -->
+    <div class="card">
+      <h2>
+        <span id="day-date" class="muted"></span>
+        <button class="btn ghost hidden" id="day-today-btn"
+                style="padding:3px 9px;margin-left:8px">Back to today</button>
+      </h2>
+      <table id="day-table">
+        <thead>
+          <tr>
+            <th>Project</th><th>Work</th><th>Notes</th>
+            <th class="num">Hours</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="day-body"></tbody>
+      </table>
+      <div id="day-empty" class="empty">No time logged on this day yet.</div>
+    </div>
+
+    <!-- add time manually -->
+    <div class="card">
+      <h2>Add time by hand</h2>
+      <div class="row">
+        <div class="field">
+          <label for="m-date">Date</label>
+          <input id="m-date" type="date">
+        </div>
+        <div class="field grow">
+          <label for="m-proj">Project</label>
+          <select id="m-proj"></select>
+        </div>
+        <div class="field">
+          <label for="m-kind">Work</label>
+          <select id="m-kind">
+            <option value="design">Design</option>
+            <option value="review">Review</option>
+            <option value="coordination">Coordination</option>
+            <option value="site_visit">Site visit</option>
+            <option value="rfi">RFI</option>
+            <option value="admin">Admin</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="m-hours">Hours</label>
+          <input id="m-hours" type="number" step="0.25" min="0.25" placeholder="1.5">
+        </div>
+        <div class="field grow">
+          <label for="m-notes">Notes</label>
+          <input id="m-notes" type="text">
+        </div>
+        <button class="btn" id="add-btn">Add</button>
+      </div>
+    </div>
+
+    <!-- week grid -->
+    <div class="card">
+      <h2>
+        Week
+        <button class="btn ghost" id="wk-prev" style="padding:3px 9px;margin-left:8px">&larr;</button>
+        <span id="wk-label" class="muted"></span>
+        <button class="btn ghost" id="wk-next" style="padding:3px 9px">&rarr;</button>
+      </h2>
+      <div class="grid-wrap">
+        <table class="grid" id="week-table">
+          <thead><tr id="week-head"></tr></thead>
+          <tbody id="week-body"></tbody>
+          <tfoot><tr class="totals" id="week-foot"></tr></tfoot>
+        </table>
+      </div>
+      <p class="small muted" style="margin:12px 0 0">
+        Type hours into a cell to correct or backfill a day, or <b>0</b> to clear it;
+        leaving a cell blank changes nothing. Cells holding timer time show it in grey
+        &mdash; you can raise the total and the difference is kept as a manual entry,
+        but you cannot overwrite recorded time. A cell with a <b>running</b> timer is
+        locked until you stop it. Click any cell to open that day above, where
+        individual entries can be edited or deleted.
+      </p>
+    </div>
+    </section>
+
+    <!-- ------------------------------------------------------ site visits -->
+    <section id="panel-visits" class="hidden">
+      <div class="card">
+        <h2>Site visits <span class="muted" id="visit-scope"></span></h2>
+        <div class="stats" id="visit-stats"></div>
+      </div>
+
+      <div class="card">
+        <h2>Log a visit</h2>
+        <div class="row">
+          <div class="field">
+            <label for="v-date">Date</label>
+            <input id="v-date" type="date">
+          </div>
+          <div class="field">
+            <label for="v-start">Start <span class="muted">(blank = all&nbsp;day)</span></label>
+            <input id="v-start" type="time">
+          </div>
+          <div class="field">
+            <label for="v-end">End</label>
+            <input id="v-end" type="time">
+          </div>
+          <div class="field grow">
+            <label for="v-proj">Project</label>
+            <select id="v-proj"></select>
+          </div>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <div class="field">
+            <label for="v-who">Who is going</label>
+            <select id="v-who"></select>
+          </div>
+          <div class="field grow">
+            <label for="v-type">Visit type</label>
+            <input id="v-type" type="text" list="visit-types" placeholder="Pre-pour inspection">
+            <datalist id="visit-types"></datalist>
+          </div>
+          <div class="field">
+            <label for="v-outcome">Outcome</label>
+            <select id="v-outcome">
+              <option value="pending">Pending</option>
+              <option value="passed">Passed</option>
+              <option value="failed">Failed</option>
+              <option value="na">n/a</option>
+            </select>
+          </div>
+          <div class="field grow">
+            <label for="v-notes">Notes</label>
+            <input id="v-notes" type="text" placeholder="what is being looked at">
+          </div>
+          <button class="btn" id="v-add">Add visit</button>
+        </div>
+        <p class="small muted" style="margin:12px 0 0">
+          Travel distance, drive time, depart time and the rate tier are filled in by
+          <code>tools/sync-visits.mjs</code>, which also books the visit on the ben
+          calendar. The browser cannot reach Outlook or Mapbox on its own.
+        </p>
+      </div>
+
+      <div class="card">
+        <h2>
+          History
+          <select id="v-filter-proj" style="width:auto;margin-left:8px;padding:4px 8px"></select>
+          <label class="small muted" style="margin-left:10px;font-weight:400">
+            <input type="checkbox" id="v-filter-mine"> only mine
+          </label>
+        </h2>
+        <div class="grid-wrap">
+          <table id="visits-table">
+            <thead>
+              <tr>
+                <th>Date</th><th>Project</th><th>Type</th><th>Who</th>
+                <th>Outcome</th><th class="num">Travel</th><th class="num">Rate</th>
+                <th>Calendar</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="visits-body"></tbody>
+          </table>
+        </div>
+        <div id="visits-empty" class="empty">No site visits recorded.</div>
+      </div>
+    </section>
+
+    <!-- admin only -->
+    <section id="panel-people" class="hidden">
+    <div class="card hidden" id="admin-card">
+      <h2>People <span class="muted">— admin</span></h2>
+      <table>
+        <thead>
+          <tr><th>Name</th><th>Role</th><th>Active</th>
+              <th class="num">Projects</th><th></th></tr>
+        </thead>
+        <tbody id="people-body"></tbody>
+      </table>
+      <p class="small muted" style="margin:10px 0 0">
+        New sign-ups arrive inactive and see nothing until you switch them on.
+        Contractors get only the projects you assign; staff also get the overhead
+        buckets. People who have logged time can be deactivated but never deleted,
+        so their history keeps its attribution.
+      </p>
+
+      <div id="assign-box" class="hidden" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--line)">
+        <h2 style="margin-bottom:10px">Projects for <span id="assign-who"></span></h2>
+        <div class="row">
+          <div class="field grow">
+            <label for="assign-proj">Add a project</label>
+            <select id="assign-proj"></select>
+          </div>
+          <button class="btn" id="assign-add">Assign</button>
+          <button class="btn ghost" id="assign-close">Done</button>
+        </div>
+        <div id="assign-list" style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap"></div>
+      </div>
+    </div>
+    </section>
+  </main>
+</div>
+
+<div id="toast"></div>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
