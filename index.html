@@ -37,21 +37,33 @@
        matching theme. Without it they stay light on a dark page. */
     color-scheme: light;
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --teal: #2C7A87; --teal-dk: #0E262B; --teal-lt: #6FBCC7; --teal-ink: #DCE9EA;
-      --clay: #C08D7C; --clay-soft: #8A6558;
-      --ink: #D9E2E2; --bg: #111D20; --card: #1A2B2F;
-      --line: #283D42; --line-strong: #3D585E; --muted: #93A8A8;
-      --err: #E07B6A; --err-bg: #3C221D;
-      --warn: #DBA94E; --warn-bg: #33280F;
-      --ok: #7FB98C;  --ok-bg: #1D2E22;
-      --grey-bg: #16262A;
-      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 14px rgba(0,0,0,.3);
-      --picker-filter: invert(1) brightness(1.6);
-      color-scheme: dark;
-    }
+  /* Manual toggle, exactly like the dashboard: an `html.dark` class persisted in
+     localStorage under 'hd-theme', defaulting to light. Deliberately NOT
+     prefers-color-scheme — the dashboard ignores the OS setting, so keying off
+     it here is what made the two look like different colour schemes on a
+     dark-mode machine. */
+  html.dark {
+    --teal: #2C7A87; --teal-dk: #0E262B; --teal-lt: #6FBCC7; --teal-ink: #DCE9EA;
+    --clay: #C08D7C; --clay-soft: #8A6558;
+    --ink: #D9E2E2; --bg: #111D20; --card: #1A2B2F;
+    --line: #283D42; --line-strong: #3D585E; --muted: #93A8A8;
+    --err: #E07B6A; --err-bg: #3C221D;
+    --warn: #DBA94E; --warn-bg: #33280F;
+    --ok: #7FB98C;  --ok-bg: #1D2E22;
+    --grey-bg: #16262A;
+    --band-txt: #A8C4C9;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 14px rgba(0,0,0,.3);
+    --picker-filter: invert(1) brightness(1.6);
+    color-scheme: dark;
   }
+
+  /* The toggle itself, mirroring the dashboard's circular button. */
+  #themeBtn {
+    width: 34px; height: 34px; border-radius: 50%;
+    border: 1px solid rgba(255,255,255,.35); background: transparent; color: #fff;
+    font-size: 15px; line-height: 1; padding: 0; letter-spacing: 0;
+  }
+  #themeBtn:hover { background: rgba(255,255,255,.14); }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
@@ -270,6 +282,24 @@
     .timer .elapsed { font-size: 26px; }
   }
 </style>
+<script>
+  // Applied before first paint so the page never flashes the wrong theme, and
+  // before app.js (a deferred module) would get a chance to run. Same key and
+  // same default as the dashboard: light unless you have chosen dark.
+  (function () {
+    var dark = localStorage.getItem('hd-theme') === 'dark';
+    document.documentElement.classList.toggle('dark', dark);
+    document.addEventListener('DOMContentLoaded', function () {
+      var b = document.getElementById('themeBtn');
+      if (!b) return;
+      b.addEventListener('click', function () {
+        var d = !document.documentElement.classList.contains('dark');
+        document.documentElement.classList.toggle('dark', d);
+        localStorage.setItem('hd-theme', d ? 'dark' : 'light');
+      });
+    });
+  })();
+</script>
 </head>
 <body>
 
@@ -318,7 +348,8 @@
       <div class="k">Signed in</div>
       <div class="v" id="who"></div>
     </div>
-    <div class="meta" style="border-left:0">
+    <div class="meta" style="border-left:0;display:flex;gap:10px;align-items:center">
+      <button id="themeBtn" aria-label="Toggle dark mode" title="Toggle dark mode">◐</button>
       <button id="signout">Sign out</button>
     </div>
   </header>
