@@ -202,6 +202,31 @@
   .tag.sched { color: var(--teal); border-color: var(--teal); background: var(--grey-bg); }
 
   /* dashboard-style context strip under the project picker */
+  .two-col { display: grid; grid-template-columns: 1.35fr 1fr; gap: 18px; align-items: start; }
+  @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+
+  /* overdue markers, like the dashboard's "12d over" gutter */
+  td.age {
+    width: 62px; white-space: nowrap; font-family: var(--mono);
+    font-size: 12px; color: var(--err); font-weight: 700;
+  }
+  td.age.soon { color: var(--warn); }
+  td.age.ok { color: var(--muted); font-weight: 400; }
+
+  .phasebar { display: flex; height: 26px; border: 1px solid var(--line-strong); overflow: hidden; }
+  .phasebar span {
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; color: #fff; font-family: var(--mono);
+  }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 9px; font-size: 12px; color: var(--muted); }
+  .legend i { display: inline-block; width: 9px; height: 9px; margin-right: 5px; }
+
+  .who-block { margin-bottom: 14px; }
+  .who-block .nm { font-weight: 700; }
+  .who-block .role { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .1em; }
+  .who-block ul { margin: 6px 0 0; padding-left: 18px; }
+  .who-block li { font-size: 13px; margin-bottom: 3px; }
+
   .context {
     margin-top: 12px; padding: 10px 12px; border-radius: 8px;
     background: var(--grey-bg); border-left: 3px solid var(--clay);
@@ -366,13 +391,44 @@
 
   <main>
     <nav class="tabs" id="tabs">
-      <button class="tab active" data-tab="time">Time</button>
+      <button class="tab active" data-tab="overview">Overview</button>
+      <button class="tab" data-tab="time">Time</button>
       <button class="tab" data-tab="visits">Site visits</button>
       <button class="tab hidden" data-tab="proposals" id="tab-proposals-btn">Proposals</button>
       <button class="tab hidden" data-tab="people" id="tab-people-btn">People</button>
     </nav>
 
-    <section id="panel-time">
+    <!-- ------------------------------------------------------- overview -->
+    <section id="panel-overview">
+      <div class="stats" id="ov-tiles" style="margin-bottom:18px"></div>
+
+      <div class="two-col">
+        <div class="card">
+          <h2>Needs attention first <span class="muted" id="ov-att-count"></span></h2>
+          <table><tbody id="ov-attention"></tbody></table>
+          <div id="ov-attention-empty" class="empty">Nothing overdue or due today.</div>
+        </div>
+
+        <div>
+          <div class="card">
+            <h2>Schedule <span class="muted">— upcoming site visits</span></h2>
+            <table><tbody id="ov-schedule"></tbody></table>
+            <div id="ov-schedule-empty" class="empty">No visits booked ahead.</div>
+          </div>
+          <div class="card">
+            <h2>Currently working on</h2>
+            <div id="ov-working" style="padding-top:12px"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Projects by phase</h2>
+        <div id="ov-phasebar" style="padding-top:14px"></div>
+      </div>
+    </section>
+
+    <section id="panel-time" class="hidden">
     <!-- running timer -->
     <div class="card">
       <h2>Active</h2>

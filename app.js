@@ -191,6 +191,7 @@ async function boot(uid) {
   }
   initVisitForm();   // needs projects, and people if this is an admin
   renderProjectContext();
+  await loadOverview();   // Overview is the landing tab
 }
 
 // The dashboard's working context for whatever project is selected: phase,
@@ -723,11 +724,127 @@ document.querySelectorAll("#tabs .tab").forEach((b) =>
 function showTab(name) {
   document.querySelectorAll("#tabs .tab").forEach((b) =>
     b.classList.toggle("active", b.dataset.tab === name));
-  for (const p of ["time", "visits", "proposals", "people"]) {
+  for (const p of ["overview", "time", "visits", "proposals", "people"]) {
     $(`panel-${p}`).classList.toggle("hidden", p !== name);
   }
+  if (name === "overview") loadOverview();
   if (name === "visits") loadVisits();
   if (name === "proposals") loadProposals();
+}
+
+// -------------------------------------------------------------- overview
+// Mirrors the project dashboard's front page: the urgency tiles, what is
+// overdue, what is booked, and where the work sits by phase.
+
+const BUCKET_LABEL = {
+  overdue: "Overdue", today: "Today", this_week: "This week",
+  next_week: "Next week", later: "Later", vague: "No date", stale: "Stale",
+};
+const PHASE_COLOR = {
+  waiting: "#75695F", "initial design": "#4E8A94", revision: "#C08D7C",
+  sent: "#3E7A4E", CA: "#16424B",
+};
+
+async function loadOverview() {
+  const [{ data: com, error: e1 }, { data: vis, error: e2 }] = await Promise.all([
+    sb.from("commitments").select("id, project_id, project_no, promise, due_date, days_left, urgency, bucket"),
+    sb.from("site_visits").select("id, project_id, visit_date, start_time, attendee_name, visit_type")
+      .gte("visit_date", ymd(new Date())).order("visit_date").limit(12),
+  ]);
+  if (e1) return fail("Loading commitments", e1);
+  if (e2) return fail("Loading the schedule", e2);
+
+  const commitments = com || [];
+  await ensureLabels(commitments.map((c) => c.project_id).filter(Boolean));
+  await ensureLabels((vis || []).map((v) => v.project_id));
+
+  renderOvTiles(commitments);
+  renderOvAttention(commitments);
+  renderOvSchedule(vis || []);
+  renderOvWorking(commitments);
+  renderOvPhases();
+}
+
+function renderOvTiles(cs) {
+  const n = (b) => cs.filter((c) => c.bucket === b).length;
+  const tile = (b, cls) =>
+    `<div class="stat ${cls || ""}"><div class="n">${n(b)}</div>
+       <div class="k">${BUCKET_LABEL[b]}</div></div>`;
+  $("ov-tiles").innerHTML =
+    tile("overdue", "fail") + tile("today", "warn") + tile("this_week") +
+    tile("next_week") + tile("later") + tile("vague") + tile("stale");
+}
+
+function ageCell(c) {
+  if (c.days_left == null) return `<td class="age ok">—</td>`;
+  if (c.days_left < 0) return `<td class="age">${Math.abs(c.days_left)}d over</td>`;
+  if (c.days_left === 0) return `<td class="age soon">today</td>`;
+  return `<td class="age ok">${c.days_left}d</td>`;
+}
+
+function renderOvAttention(cs) {
+  // Overdue first, then today, then this week - the dashboard's own ordering.
+  const rank = { overdue: 0, today: 1, this_week: 2 };
+  const rows = cs.filter((c) => c.bucket in rank)
+    .sort((a, b) => (rank[a.bucket] - rank[b.bucket]) ||
+                    ((a.days_left ?? 0) - (b.days_left ?? 0)));
+  $("ov-att-count").textContent = rows.length ? `— ${rows.length}` : "";
+  $("ov-attention-empty").classList.toggle("hidden", rows.length > 0);
+  $("ov-attention").innerHTML = rows.map((c) => `
+    <tr>${ageCell(c)}
+      <td>${c.project_id
+              ? `<b>${escapeHtml(labelFor(c.project_id))}</b><br>`
+              : c.project_no ? `<b>${escapeHtml(c.project_no)}</b><br>` : ""}
+          ${escapeHtml(c.promise)}
+          ${c.due_date ? `<div class="small muted">${escapeHtml(c.due_date)}</div>` : ""}</td>
+    </tr>`).join("");
+}
+
+function renderOvSchedule(vs) {
+  $("ov-schedule-empty").classList.toggle("hidden", vs.length > 0);
+  $("ov-schedule").innerHTML = vs.map((v) => `
+    <tr>
+      <td class="age ok" style="width:74px">${escapeHtml(v.visit_date.slice(5).replace("-", "/"))}
+        <div>${v.start_time ? escapeHtml(v.start_time.slice(0, 5)) : "all day"}</div></td>
+      <td><b>${escapeHtml(labelFor(v.project_id))}</b>
+        <div class="small muted">${escapeHtml(v.visit_type)} · ${escapeHtml(v.attendee_name)}</div></td>
+    </tr>`).join("");
+}
+
+function renderOvWorking(cs) {
+  // Grouped by person where the commitment names one, otherwise by project.
+  const byProject = {};
+  for (const c of cs.filter((x) => x.bucket === "overdue" || x.bucket === "today")) {
+    const k = c.project_id ? labelFor(c.project_id) : (c.project_no || "Unassigned");
+    (byProject[k] ||= []).push(c.promise);
+  }
+  const blocks = Object.entries(byProject).slice(0, 8);
+  $("ov-working").innerHTML = blocks.length
+    ? blocks.map(([proj, list]) => `
+        <div class="who-block">
+          <div class="nm">${escapeHtml(proj)}</div>
+          <ul>${list.slice(0, 3).map((p) => `<li>${escapeHtml(p)}</li>`).join("")}</ul>
+        </div>`).join("")
+    : `<span class="muted small">Nothing pressing.</span>`;
+}
+
+function renderOvPhases() {
+  const live = projects.filter((p) => !p.is_overhead && p.status === "active" && p.phase);
+  const counts = {};
+  for (const p of live) counts[p.phase] = (counts[p.phase] || 0) + 1;
+  const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  const total = entries.reduce((a, [, n]) => a + n, 0);
+  if (!total) {
+    $("ov-phasebar").innerHTML = `<span class="muted small">No phase data yet.</span>`;
+    return;
+  }
+  $("ov-phasebar").innerHTML =
+    `<div class="phasebar">${entries.map(([ph, n]) =>
+      `<span style="width:${(n / total) * 100}%;background:${PHASE_COLOR[ph] || "#8A8078"}"
+             title="${escapeHtml(ph)}: ${n}">${(n / total) > 0.06 ? n : ""}</span>`).join("")}</div>` +
+    `<div class="legend">${entries.map(([ph, n]) =>
+      `<span><i style="background:${PHASE_COLOR[ph] || "#8A8078"}"></i>${escapeHtml(ph)} · ${n}</span>`
+      ).join("")}</div>`;
 }
 
 // ----------------------------------------------------------- proposals
