@@ -27,6 +27,7 @@
     --ok: #3E7A4E;
     --ok-bg: #E4ECE1;
     --grey-bg: #ECE4E0;
+    --band-txt: #A8C4C9;
     --mono: "Cascadia Mono","Cascadia Code",Consolas,ui-monospace,monospace;
     --sans: "Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;
     --radius: 10px;
@@ -62,29 +63,58 @@
   button { font: inherit; cursor: pointer; }
   input, select, textarea { font: inherit; color: inherit; }
 
+  /* Masthead band, like the dashboard sheet header: firm block on the left,
+     metadata blocks on the right separated by hairline rules, clay rule under. */
   header.app {
-    background: var(--teal); color: #fff; padding: 10px 16px;
-    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-    position: sticky; top: 0; z-index: 20;
+    background: var(--teal-dk); color: #fff;
+    padding: 16px 22px 14px; border-bottom: 3px solid var(--clay);
+    display: flex; align-items: flex-start; gap: 0; flex-wrap: wrap;
   }
-  header.app .brand { font-weight: 700; letter-spacing: .06em; font-size: 13px; }
-  header.app .spacer { flex: 1; }
-  header.app .who { font-size: 13px; opacity: .9; }
+  header.app .firm { flex: 1; min-width: 220px; }
+  header.app .eyebrow {
+    font-size: 10px; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--band-txt, #A8C4C9); margin-bottom: 3px;
+  }
+  header.app .name { font-size: 20px; font-weight: 700; letter-spacing: .01em; }
+  header.app .sub {
+    font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--band-txt, #A8C4C9); margin-top: 3px;
+  }
+  header.app .meta {
+    padding: 0 20px; border-left: 1px solid rgba(255,255,255,.18); align-self: stretch;
+  }
+  header.app .meta .k {
+    font-size: 10px; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--band-txt, #A8C4C9); margin-bottom: 3px;
+  }
+  header.app .meta .v { font-family: var(--mono); font-size: 13px; font-weight: 600; }
   header.app button {
-    background: rgba(255,255,255,.14); color: #fff; border: 1px solid rgba(255,255,255,.25);
-    border-radius: 6px; padding: 5px 10px; font-size: 13px;
+    background: transparent; color: #fff; border: 1px solid rgba(255,255,255,.35);
+    border-radius: 0; padding: 6px 12px; font-size: 11px;
+    letter-spacing: .1em; text-transform: uppercase;
   }
-  header.app button:hover { background: rgba(255,255,255,.24); }
+  header.app button:hover { background: rgba(255,255,255,.14); }
 
-  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 18px 22px 40px; }
+
+  /* Flat, squared, print-like: a dark teal caption band on top of a cream
+     panel, hairline borders, no rounding and almost no shadow. */
   .card {
-    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
-    box-shadow: var(--shadow); padding: 16px; margin-bottom: 16px;
+    background: var(--card); border: 1px solid var(--line); border-radius: 0;
+    margin-bottom: 18px;
   }
   .card > h2 {
-    font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
-    color: var(--muted); margin-bottom: 12px;
+    background: var(--teal-dk); color: #fff;
+    font-size: 11px; text-transform: uppercase; letter-spacing: .12em; font-weight: 700;
+    margin: 0; padding: 9px 14px;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   }
+  .card > h2 .muted, .card > h2 span.muted { color: var(--band-txt, #A8C4C9); }
+  .card > *:not(h2) { margin-left: 14px; margin-right: 14px; }
+  .card > .row:first-of-type, .card > .stats { margin-top: 14px; }
+  .card > *:last-child { margin-bottom: 14px; }
+  .card > .grid-wrap { margin: 0; }
+  .card > table { margin: 0; width: 100%; }
   .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
   .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .field label { font-size: 12px; color: var(--muted); }
@@ -96,8 +126,8 @@
   select, textarea,
   input:not([type=checkbox]):not([type=radio]):not([type=submit]):not([type=button]) {
     background: var(--bg); color: var(--ink);
-    border: 1px solid var(--line); border-radius: 7px;
-    padding: 9px 10px; min-width: 0; width: 100%;
+    border: 1px solid var(--line-strong); border-radius: 0;
+    padding: 8px 10px; min-width: 0; width: 100%;
   }
   select:focus, input:focus, textarea:focus { outline: 2px solid var(--teal-lt); outline-offset: -1px; }
   /* Native date/time pickers and the select arrow are drawn by the browser; this
@@ -105,19 +135,20 @@
   input::-webkit-calendar-picker-indicator { filter: var(--picker-filter); cursor: pointer; }
 
   .btn {
-    background: var(--teal); color: #fff; border: 0; border-radius: 7px;
-    padding: 10px 16px; font-weight: 600;
+    background: var(--teal); color: #fff; border: 0; border-radius: 0;
+    padding: 10px 18px; font-weight: 700;
+    font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
   }
   .btn:hover { background: var(--teal-dk); }
   .btn.stop { background: var(--err); }
-  .btn.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+  .btn.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line-strong); border-radius: 0; }
   .btn.ghost:hover { color: var(--ink); }
   .btn:disabled { opacity: .5; cursor: not-allowed; }
 
   /* running timer */
   .timer {
     display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
-    padding: 14px 16px; border-radius: var(--radius);
+    padding: 15px 16px; border-radius: 0;
     background: linear-gradient(180deg, var(--teal) 0%, var(--teal-dk) 100%); color: #fff;
   }
   .timer .elapsed {
@@ -129,8 +160,12 @@
   .timer.idle { background: var(--card); color: var(--muted); border: 1px dashed var(--line); }
 
   table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
-  th { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); }
+  th {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .12em;
+    color: var(--muted); font-weight: 700;
+    border-bottom: 1px solid var(--line-strong); background: var(--grey-bg);
+  }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   tr:last-child td { border-bottom: 0; }
   .totals td { font-weight: 700; border-top: 2px solid var(--line); }
@@ -142,8 +177,8 @@
   }
   table.grid td.locked input { background: transparent; border-color: transparent; color: var(--muted); }
   .tag {
-    display: inline-block; font-size: 11px; padding: 2px 7px; border-radius: 20px;
-    background: var(--bg); border: 1px solid var(--line); color: var(--muted);
+    display: inline-block; font-size: 11px; padding: 2px 7px; border-radius: 0;
+    background: var(--grey-bg); border: 1px solid var(--line-strong); color: var(--muted);
   }
   .tag.nb { color: var(--warn); border-color: var(--warn); background: var(--warn-bg); }
   .tag.ok { color: var(--ok); border-color: var(--ok); background: var(--ok-bg); }
@@ -160,7 +195,7 @@
   .right { text-align: right; }
   .empty { color: var(--muted); padding: 18px 0; text-align: center; }
 
-  #toast {
+  #toast { border-radius: 0 !important;
     position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(20px);
     background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 8px;
     box-shadow: var(--shadow); opacity: 0; transition: .2s; pointer-events: none;
@@ -171,26 +206,39 @@
   #toast.warn { background: var(--warn); color: #fff; }
 
   /* tabs */
-  nav.tabs { display: flex; gap: 4px; margin: 4px 0 16px; flex-wrap: wrap; }
+  /* Tab strip sits in its own dark band, flush under the masthead. */
+  nav.tabs {
+    display: flex; gap: 0; flex-wrap: wrap;
+    background: var(--teal); margin: -18px -22px 20px; padding: 0 22px;
+  }
   nav.tabs .tab {
-    background: transparent; border: 1px solid transparent; border-radius: 8px;
-    padding: 8px 15px; color: var(--muted); font-weight: 600; font-size: 14px;
+    background: transparent; border: 0; border-radius: 0;
+    padding: 11px 18px; color: rgba(255,255,255,.72);
+    font-weight: 700; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
   }
-  nav.tabs .tab:hover { color: var(--ink); background: var(--card); }
-  nav.tabs .tab.active {
-    background: var(--card); color: var(--teal-lt);
-    border-color: var(--line); box-shadow: var(--shadow);
-  }
+  nav.tabs .tab:hover { color: #fff; background: rgba(255,255,255,.08); }
+  nav.tabs .tab.active { background: var(--card); color: var(--teal-dk); }
 
-  /* summary tiles */
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+  /* Stat tiles: squared, hairline, with a heavy accent rule across the top. */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 12px; }
   .stat {
-    background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 11px 13px;
+    background: var(--card); border: 1px solid var(--line); border-top: 3px solid var(--line-strong);
+    border-radius: 0; padding: 12px 14px 11px;
   }
-  .stat .n { font-size: 25px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
-  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .stat .n {
+    font-size: 27px; font-weight: 700; letter-spacing: -.02em;
+    font-family: var(--mono); line-height: 1.05;
+  }
+  .stat .k {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .12em;
+    color: var(--muted); margin-top: 4px;
+  }
+  .stat.pass { border-top-color: var(--ok); }
   .stat.pass .n { color: var(--ok); }
+  .stat.fail { border-top-color: var(--err); }
   .stat.fail .n { color: var(--err); }
+  .stat.warn { border-top-color: var(--warn); }
+  .stat.warn .n { color: var(--warn); }
   .bar { display: flex; height: 6px; border-radius: 4px; overflow: hidden; margin-top: 10px; background: var(--line); }
   .bar span { display: block; }
   table.grid input:disabled { background: var(--line); cursor: not-allowed; opacity: .8; }
@@ -207,7 +255,7 @@
   .chip {
     display: inline-flex; align-items: center; gap: 6px; font-size: 13px;
     background: var(--bg); border: 1px solid var(--line); border-radius: 20px;
-    padding: 4px 6px 4px 12px;
+    padding: 3px 5px 3px 10px;
   }
   .chip button {
     border: 0; background: transparent; color: var(--muted); font-size: 15px;
@@ -257,11 +305,22 @@
 <!-- -------------------------------------------------------------- app -->
 <div id="app" class="hidden">
   <header class="app">
-    <span class="brand">HIGGINS-DESIGNS</span>
-    <span class="muted" style="color:rgba(255,255,255,.7);font-size:13px">Time</span>
-    <span class="spacer"></span>
-    <span class="who" id="who"></span>
-    <button id="signout">Sign out</button>
+    <div class="firm">
+      <div class="eyebrow">Firm</div>
+      <div class="name">HIGGINS-DESIGNS, PC</div>
+      <div class="sub">Structural Engineering · Austin TX · TX Firm F-23989</div>
+    </div>
+    <div class="meta">
+      <div class="k">Sheet</div>
+      <div class="v">TIME &amp; SITE VISITS</div>
+    </div>
+    <div class="meta">
+      <div class="k">Signed in</div>
+      <div class="v" id="who"></div>
+    </div>
+    <div class="meta" style="border-left:0">
+      <button id="signout">Sign out</button>
+    </div>
   </header>
 
   <main>
