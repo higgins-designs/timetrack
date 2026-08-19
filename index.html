@@ -5,30 +5,47 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Higgins-Designs · Time</title>
 <style>
+  /* Palette lifted from the project dashboard so the two read as one system:
+     teal + clay on warm paper, not the cool grey this started with. */
   :root {
     --teal: #1E5862;
-    --teal-dk: #16434b;
-    --teal-lt: #2d7683;
-    --bg: #f4f6f6;
-    --card: #ffffff;
-    --ink: #1a1f21;
-    --muted: #647175;
-    --line: #dde3e4;
-    --ok: #1f7a4d;
-    --warn: #a8620f;
-    --err: #a32020;
+    --teal-dk: #16424B;
+    --teal-lt: #1E5862;
+    --teal-ink: #0F3138;
+    --clay: #C08D7C;
+    --clay-soft: #D9BCB1;
+    --ink: #2B3335;
+    --bg: #E2D8D4;
+    --card: #F8F5F3;
+    --line: #D3C7C1;
+    --line-strong: #BCAEA7;
+    --muted: #75695F;
+    --err: #A93B2C;
+    --err-bg: #F4E3DE;
+    --warn: #A9740F;
+    --warn-bg: #F1E7D1;
+    --ok: #3E7A4E;
+    --ok-bg: #E4ECE1;
+    --grey-bg: #ECE4E0;
+    --mono: "Cascadia Mono","Cascadia Code",Consolas,ui-monospace,monospace;
+    --sans: "Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;
     --radius: 10px;
-    --shadow: 0 1px 2px rgba(16,32,36,.06), 0 4px 14px rgba(16,32,36,.05);
+    --shadow: 0 1px 2px rgba(43,51,53,.09), 0 4px 14px rgba(43,51,53,.07);
     --picker-filter: none;
-    /* Tells the browser to draw native controls - date/time pickers, the select
-       arrow, scrollbars - in the matching theme. Without it they stay light on a
-       dark page and the text disappears. */
+    /* Draws native controls - date/time pickers, the select arrow - in the
+       matching theme. Without it they stay light on a dark page. */
     color-scheme: light;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #12181a; --card: #1a2225; --ink: #e8edee; --muted: #93a1a5;
-      --line: #2b3639; --teal-lt: #4aa2b2;
+      --teal: #2C7A87; --teal-dk: #0E262B; --teal-lt: #6FBCC7; --teal-ink: #DCE9EA;
+      --clay: #C08D7C; --clay-soft: #8A6558;
+      --ink: #D9E2E2; --bg: #111D20; --card: #1A2B2F;
+      --line: #283D42; --line-strong: #3D585E; --muted: #93A8A8;
+      --err: #E07B6A; --err-bg: #3C221D;
+      --warn: #DBA94E; --warn-bg: #33280F;
+      --ok: #7FB98C;  --ok-bg: #1D2E22;
+      --grey-bg: #16262A;
       --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 14px rgba(0,0,0,.3);
       --picker-filter: invert(1) brightness(1.6);
       color-scheme: dark;
@@ -37,9 +54,10 @@
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
-    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font: 15px/1.5 var(--sans);
     -webkit-font-smoothing: antialiased;
   }
+  .mono, td.num, th.num, .elapsed { font-family: var(--mono); }
   h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -.01em; }
   button { font: inherit; cursor: pointer; }
   input, select, textarea { font: inherit; color: inherit; }
@@ -127,7 +145,15 @@
     display: inline-block; font-size: 11px; padding: 2px 7px; border-radius: 20px;
     background: var(--bg); border: 1px solid var(--line); color: var(--muted);
   }
-  .tag.nb { color: var(--warn); border-color: var(--warn); }
+  .tag.nb { color: var(--warn); border-color: var(--warn); background: var(--warn-bg); }
+  .tag.ok { color: var(--ok); border-color: var(--ok); background: var(--ok-bg); }
+  .tag.sched { color: var(--teal); border-color: var(--teal); background: var(--grey-bg); }
+
+  /* dashboard-style context strip under the project picker */
+  .context {
+    margin-top: 12px; padding: 10px 12px; border-radius: 8px;
+    background: var(--grey-bg); border-left: 3px solid var(--clay);
+  }
 
   .muted { color: var(--muted); }
   .small { font-size: 13px; }
@@ -242,6 +268,7 @@
     <nav class="tabs" id="tabs">
       <button class="tab active" data-tab="time">Time</button>
       <button class="tab" data-tab="visits">Site visits</button>
+      <button class="tab hidden" data-tab="proposals" id="tab-proposals-btn">Proposals</button>
       <button class="tab hidden" data-tab="people" id="tab-people-btn">People</button>
     </nav>
 
@@ -279,6 +306,7 @@
         </div>
         <button class="btn" id="start-btn">Start</button>
       </div>
+      <div id="proj-context" class="hidden context"></div>
     </div>
 
     <!-- the selected day (defaults to today; clicking a week cell moves it) -->
@@ -434,7 +462,8 @@
             <thead>
               <tr>
                 <th>Date</th><th>Project</th><th>Type</th><th>Who</th>
-                <th>Outcome</th><th class="num">Travel</th><th class="num">Rate</th>
+                <th>Outcome</th><th class="num">Travel</th>
+                <th class="num admin-only-col hidden">Rate</th>
                 <th>Calendar</th><th></th>
               </tr>
             </thead>
@@ -442,6 +471,47 @@
           </table>
         </div>
         <div id="visits-empty" class="empty">No site visits recorded.</div>
+      </div>
+    </section>
+
+    <!-- -------------------------------------------------- proposals (admin) -->
+    <section id="panel-proposals" class="hidden">
+      <div class="card">
+        <h2>Proposals <span class="muted" id="prop-scope"></span></h2>
+        <div class="stats" id="prop-stats"></div>
+        <p class="small muted" style="margin:12px 0 0">
+          Mirror of <code>HD-Business\05_proposals</code>. The registry stays the
+          source of truth — refresh with <code>tools/import-proposals.py --apply</code>.
+          <b>Fees are admin-only</b>; employees cannot read this table at all.
+        </p>
+      </div>
+
+      <div class="card">
+        <h2>
+          Register
+          <select id="prop-filter-status" style="width:auto;margin-left:8px;padding:4px 8px">
+            <option value="">All statuses</option>
+            <option value="for_review">For review</option>
+            <option value="sent">Sent</option>
+            <option value="signed">Signed</option>
+            <option value="archive">Archive</option>
+          </select>
+          <input id="prop-search" type="text" placeholder="search address or client"
+                 style="width:auto;margin-left:8px;padding:4px 8px">
+        </h2>
+        <div class="grid-wrap">
+          <table id="prop-table">
+            <thead>
+              <tr>
+                <th>No.</th><th>Address / title</th><th>Client</th><th>Status</th>
+                <th class="num">Design fee</th><th class="num">Per visit</th>
+                <th>Project</th>
+              </tr>
+            </thead>
+            <tbody id="prop-body"></tbody>
+          </table>
+        </div>
+        <div id="prop-empty" class="empty">No proposals match.</div>
       </div>
     </section>
 

@@ -186,10 +186,33 @@ async function boot(uid) {
   if (me.role === "admin") {
     $("admin-card").classList.remove("hidden");
     $("tab-people-btn").classList.remove("hidden");
+    $("tab-proposals-btn").classList.remove("hidden");
     await loadPeople();
   }
   initVisitForm();   // needs projects, and people if this is an admin
+  renderProjectContext();
 }
+
+// The dashboard's working context for whatever project is selected: phase,
+// client and the current next action, so you can see what a job is waiting on
+// without leaving the timer.
+function renderProjectContext() {
+  const box = $("proj-context");
+  if (!box) return;
+  const p = projects.find((x) => String(x.id) === String($("proj").value));
+  if (!p || (!p.phase && !p.client && !p.next_action)) {
+    box.classList.add("hidden");
+    return;
+  }
+  box.classList.remove("hidden");
+  box.innerHTML =
+    `${p.phase ? `<span class="tag sched">${escapeHtml(p.phase)}</span>` : ""}` +
+    `${p.client ? `<span class="small muted"> ${escapeHtml(p.client)}</span>` : ""}` +
+    `${p.next_action ? `<div class="small" style="margin-top:6px">
+        <b>Next:</b> ${escapeHtml(p.next_action)}</div>` : ""}`;
+}
+
+$("proj").addEventListener("change", renderProjectContext);
 
 // Every project you have access to, including closed ones — a warranty visit or
 // a late correction lands on a job that closed months ago, and it still has to
@@ -222,7 +245,7 @@ function fillProjectSelect(sel, list) {
 async function loadProjects() {
   const { data, error } = await sb
     .from("projects")
-    .select("id, number, name, is_overhead, status")
+    .select("id, number, name, is_overhead, status, phase, client, next_action")
     .order("is_overhead", { ascending: true })
     .order("number", { ascending: false });
 
@@ -700,11 +723,88 @@ document.querySelectorAll("#tabs .tab").forEach((b) =>
 function showTab(name) {
   document.querySelectorAll("#tabs .tab").forEach((b) =>
     b.classList.toggle("active", b.dataset.tab === name));
-  for (const p of ["time", "visits", "people"]) {
+  for (const p of ["time", "visits", "proposals", "people"]) {
     $(`panel-${p}`).classList.toggle("hidden", p !== name);
   }
   if (name === "visits") loadVisits();
+  if (name === "proposals") loadProposals();
 }
+
+// ----------------------------------------------------------- proposals
+
+let proposals = [];
+
+async function loadProposals() {
+  if (me.role !== "admin") return;      // RLS denies it anyway; don't even ask
+  const { data, error } = await sb
+    .from("proposals")
+    .select(`id, number, title, client_name, status, design_fee, visit_rate,
+             project_id, link_confidence, link_note`)
+    .order("number", { ascending: false });
+  if (error) return fail("Loading proposals", error);
+  proposals = data || [];
+  await ensureLabels(proposals.map((p) => p.project_id).filter(Boolean));
+  renderProposalStats();
+  renderProposals();
+}
+
+function visibleProposals() {
+  const st = $("prop-filter-status").value;
+  const q = $("prop-search").value.trim().toLowerCase();
+  return proposals.filter((p) =>
+    (!st || p.status === st) &&
+    (!q || `${p.number} ${p.title} ${p.client_name || ""}`.toLowerCase().includes(q)));
+}
+
+function renderProposalStats() {
+  const all = proposals;
+  const n = (s) => all.filter((p) => p.status === s).length;
+  const money = all.filter((p) => p.status === "signed" && p.design_fee)
+                   .reduce((a, p) => a + Number(p.design_fee), 0);
+  $("prop-scope").textContent = `· ${all.length} on record`;
+  $("prop-stats").innerHTML = `
+    <div class="stat"><div class="n">${n("for_review")}</div><div class="k">For review</div></div>
+    <div class="stat"><div class="n">${n("sent")}</div><div class="k">Sent</div></div>
+    <div class="stat pass"><div class="n">${n("signed")}</div><div class="k">Signed</div></div>
+    <div class="stat"><div class="n">${n("archive")}</div><div class="k">Archive</div></div>
+    <div class="stat"><div class="n">${all.filter((p) => p.project_id).length}</div>
+      <div class="k">Linked to a job</div></div>
+    <div class="stat"><div class="n">$${(money / 1000).toFixed(0)}k</div>
+      <div class="k">Signed design fees</div></div>`;
+}
+
+function renderProposals() {
+  const rows = visibleProposals();
+  const body = $("prop-body");
+  body.innerHTML = "";
+  $("prop-empty").classList.toggle("hidden", rows.length > 0);
+  $("prop-table").classList.toggle("hidden", rows.length === 0);
+
+  for (const p of rows.slice(0, 400)) {
+    const link = p.project_id
+      // A merely address-matched link is marked, because billing off an
+      // unverified link is how a fee lands on the wrong job.
+      ? `${escapeHtml(labelFor(p.project_id))}${
+          p.link_confidence === "suggested"
+            ? ` <span class="tag nb" title="${escapeHtml(p.link_note || "")}">unconfirmed</span>`
+            : ""}`
+      : `<span class="muted">—</span>`;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="mono small">${escapeHtml(p.number)}</td>
+      <td>${escapeHtml(p.title || "")}</td>
+      <td class="small">${escapeHtml(p.client_name || "")}</td>
+      <td><span class="tag ${p.status === "signed" ? "ok" : p.status === "for_review" ? "nb" : ""}"
+            >${escapeHtml(p.status)}</span></td>
+      <td class="num">${p.design_fee ? "$" + Number(p.design_fee).toLocaleString() : ""}</td>
+      <td class="num">${p.visit_rate ? "$" + p.visit_rate : ""}</td>
+      <td class="small">${link}</td>`;
+    body.appendChild(tr);
+  }
+}
+
+$("prop-filter-status").addEventListener("change", renderProposals);
+$("prop-search").addEventListener("input", renderProposals);
 
 // --------------------------------------------------------- site visits
 
@@ -718,17 +818,32 @@ const COMMON_TYPES = [
   "Deck framing inspection", "Project walkthrough", "Site visit",
 ];
 
+let visitBilling = {};        // visit_id -> {rate, basis}. Admin only.
+
 async function loadVisits() {
   const { data, error } = await sb
     .from("site_visits")
     .select(`id, project_id, visit_date, start_time, end_time, attendee_id, attendee_name,
              visit_type, outcome, notes, distance_mi, duration_min, depart_time,
-             suggested_rate, rate, rate_ambiguous, calendar_event_id, source`)
+             calendar_event_id, source`)
     .order("visit_date", { ascending: false })
     .order("id", { ascending: false });
 
   if (error) return fail("Loading site visits", error);
   visits = data || [];
+
+  // Fees live in a separate admin-only table, so an employee never even asks
+  // for them. Distance and drive time stay on the visit — they are logistics.
+  visitBilling = {};
+  if (me.role === "admin") {
+    const { data: bill } = await sb
+      .from("site_visit_billing")
+      .select("visit_id, rate, rate_basis");
+    for (const b of bill || []) visitBilling[b.visit_id] = b;
+  }
+  document.querySelectorAll(".admin-only-col").forEach((n) =>
+    n.classList.toggle("hidden", me.role !== "admin"));
+
   await ensureLabels(visits.map((v) => v.project_id));
   renderVisitFilters();
   renderVisitStats();
@@ -794,13 +909,10 @@ function renderVisits() {
     const travel = v.distance_mi != null
       ? `${v.distance_mi} mi · ${v.duration_min ?? "?"} min`
       : `<span class="muted">—</span>`;
-    // A suggested rate is shown as a suggestion, never as a decided fee.
-    const rate = v.rate != null
-      ? `$${v.rate}`
-      : v.suggested_rate
-        ? `<span class="muted" title="Suggested from distance — not confirmed">~$${v.suggested_rate}${
-            v.rate_ambiguous ? " ?" : ""}</span>`
-        : `<span class="muted">—</span>`;
+    const b = visitBilling[v.id];
+    const rate = b && b.rate != null
+      ? `<span title="${escapeHtml(b.rate_basis || "")}">$${b.rate}</span>`
+      : `<span class="muted" title="${escapeHtml((b && b.rate_basis) || "no contracted rate")}">—</span>`;
     const cal = v.calendar_event_id
       ? `<span class="tag" style="color:var(--ok);border-color:var(--ok)">booked</span>`
       : v.source === "import"
@@ -819,7 +931,7 @@ function renderVisits() {
               `<option value="${k}"${k === v.outcome ? " selected" : ""}>${l}</option>`).join("")}
           </select></td>
       <td class="num small">${travel}</td>
-      <td class="num small">${rate}</td>
+      <td class="num small admin-only-col${me.role === "admin" ? "" : " hidden"}">${rate}</td>
       <td>${cal}</td>
       <td class="right"><button class="btn ghost" data-vdel="${v.id}"
             style="padding:3px 9px;font-size:12px">Delete</button></td>`;
