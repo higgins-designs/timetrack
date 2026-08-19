@@ -937,9 +937,19 @@ async function loadPeople() {
           </select></td>
       <td><input type="checkbox" data-active="${p.id}" ${p.active ? "checked" : ""}
                  ${lock ? "disabled" : ""}></td>
-      <td class="num">${tally[p.id] || 0}</td>
-      <td class="right"><button class="btn ghost" data-assign="${p.id}"
-            style="padding:3px 9px;font-size:12px">Projects</button></td>`;
+      <td class="num">${
+        // Staff see every project by role, so an assignment count here would
+        // read as "0 projects" for someone who can actually see all of them.
+        p.role === "contractor"
+          ? (tally[p.id] || 0)
+          : `<span title="Staff see every project by role">all</span>`
+      }</td>
+      <td class="right">${
+        p.role === "contractor"
+          ? `<button class="btn ghost" data-assign="${p.id}"
+               style="padding:3px 9px;font-size:12px">Projects</button>`
+          : `<span class="small muted">—</span>`
+      }</td>`;
     body.appendChild(tr);
   }
 
