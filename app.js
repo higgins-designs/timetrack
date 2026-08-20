@@ -1175,6 +1175,29 @@ const DISPOSITION = {
 let hoursRows = [];        // time_entries in range, confirmed only
 let hoursVisits = [];      // site_visits in range
 let contractOf = {};       // project_id -> the confirmed signed proposal, if any
+
+// "" = everyone. An employee is pinned to themselves by RLS anyway; this only
+// changes what an admin is looking at.
+function whoFilter() {
+  return me.role === "admin" ? ($("h-who").value || "") : me.id;
+}
+function personRows() {
+  const who = whoFilter();
+  return who ? hoursRows.filter((r) => r.employee_id === who) : hoursRows;
+}
+function personVisits() {
+  const who = whoFilter();
+  if (!who) return hoursVisits;
+  const p = personById(who);
+  const name = (p && p.full_name || "").toLowerCase();
+  // attendee_id is null on the imported history, which is most of it, so fall
+  // back to the name the log recorded.
+  return hoursVisits.filter((v) => v.attendee_id === who ||
+    (v.attendee_name || "").toLowerCase() === name);
+}
+function personById(id) {
+  return people.find((x) => x.id === id) || (id === me.id ? me : null);
+}
 let hoursBilling = {};     // visit_id -> {rate, rate_basis, disposition}. Admin only.
 
 function hoursRange() {
@@ -1251,11 +1274,161 @@ async function loadHours() {
     for (const b of bill || []) hoursBilling[b.visit_id] = b;
   }
 
+  renderHours();
+}
+
+// Everything on the tab reads the same person filter, so they can never
+// disagree about who is being looked at.
+function renderHours() {
   renderHoursStats();
+  renderPerson();
   renderHoursByProject();
   renderAdditionalServices();
   renderVisitWorksheet();
   renderMargin();
+}
+
+// ------------------------------------------------- one person's time
+// What they worked on, whether the days are complete, what it cost, and how
+// much of it was site visits — which bill per visit, so those hours are inside
+// a fee rather than being desk time anyone would invoice hourly.
+
+function renderPerson() {
+  const who = whoFilter();
+  const card = $("person-card");
+  // For an employee the whole tab is already their own; a second panel saying
+  // so would just be the same numbers twice.
+  const show = Boolean(who) && me.role === "admin";
+  card.classList.toggle("hidden", !show);
+  document.querySelectorAll(".admin-hours-col").forEach((n) =>
+    n.classList.toggle("hidden", me.role !== "admin"));
+  if (!show) return;
+
+  const p = personById(who);
+  const rows = personRows();
+  const visits = personVisits();
+  const { from, to } = hoursRange();
+
+  $("person-name").textContent = p ? p.full_name : "—";
+  $("person-range").textContent =
+    `— ${from === "1900-01-01" ? "everything" : from} to ${to === "2999-12-31" ? "now" : to}`;
+
+  const deskMin = rows.filter((r) => r.task_kind !== "site_visit")
+                      .reduce((a, r) => a + r.minutes, 0);
+  const visitMin = rows.filter((r) => r.task_kind === "site_visit")
+                       .reduce((a, r) => a + r.minutes, 0);
+  const days = new Set(rows.map((r) => r.work_date));
+  const projects = new Set(rows.map((r) => r.project_id));
+  const cover = coverage(rows, from, to);
+
+  $("person-stats").innerHTML = `
+    <div class="stat"><div class="n">${hrs(deskMin + visitMin) || "0"}</div>
+      <div class="k">Hours logged</div></div>
+    <div class="stat"><div class="n">${days.size}</div><div class="k">Days with time</div></div>
+    <div class="stat ${cover.empty.length ? "fail" : ""}"><div class="n">${cover.empty.length}</div>
+      <div class="k">Weekdays with none</div></div>
+    <div class="stat"><div class="n">${projects.size}</div><div class="k">Projects</div></div>
+    <div class="stat"><div class="n">${hrs(visitMin) || "0"}</div>
+      <div class="k">Of that, site visits</div></div>
+    <div class="stat"><div class="n">${visits.length}</div><div class="k">Visits attended</div></div>`;
+
+  renderPersonDays(cover);
+  renderPersonProjects(rows);
+}
+
+// One cell per calendar day in the range. Weekends are drawn but never counted
+// as missing — HD does not have a stated working week, and calling a Saturday a
+// gap would be inventing a rule.
+function coverage(rows, from, to) {
+  const byDay = {};
+  for (const r of rows) byDay[r.work_date] = (byDay[r.work_date] || 0) + r.minutes;
+
+  const dates = Object.keys(byDay).sort();
+  const start = from === "1900-01-01" ? (dates[0] || ymd(new Date())) : from;
+  const endWanted = to === "2999-12-31" ? ymd(new Date()) : to;
+  // Never call a day in the future a missing day.
+  const end = endWanted > ymd(new Date()) ? ymd(new Date()) : endWanted;
+
+  const cells = [];
+  const empty = [];
+  let d = parseYmd(start);
+  const last = parseYmd(end);
+  // A guard, not a policy: a range of everything on a long history would
+  // otherwise draw thousands of cells.
+  for (let i = 0; d <= last && i < 400; i++, d = addDays(d, 1)) {
+    const key = ymd(d);
+    const weekend = d.getDay() === 0 || d.getDay() === 6;
+    const minutes = byDay[key] || 0;
+    cells.push({ key, date: d, weekend, minutes });
+    if (!weekend && !minutes) empty.push(key);
+  }
+  return { cells, empty, truncated: d <= last };
+}
+
+function renderPersonDays(cover) {
+  const targetRaw = parseFloat($("person-target").value);
+  const target = targetRaw > 0 ? targetRaw * 60 : null;
+
+  $("person-days").innerHTML = `<div class="daygrid">${cover.cells.map((c) => {
+    let cls = "";
+    if (c.weekend) cls = "weekend";
+    else if (!c.minutes) cls = "none";
+    else if (target && c.minutes < target) cls = "short";
+    else cls = "ok";
+    return `<div class="d ${cls}" title="${c.key}">
+      <div class="dt">${c.date.toLocaleDateString(undefined, { weekday: "short" })} ${c.date.getDate()}</div>
+      <div class="h">${c.minutes ? hrs(c.minutes) : "—"}</div>
+    </div>`;
+  }).join("")}</div>`;
+
+  const bits = [];
+  if (cover.empty.length) {
+    bits.push(`<b>${cover.empty.length} weekday${cover.empty.length === 1 ? "" : "s"} with no time at all</b>`);
+  } else {
+    bits.push("Every weekday in this range has something on it");
+  }
+  if (target) bits.push(`amber is under ${hrs(target)} h`);
+  else bits.push(`set a number above to flag short days &mdash; there is no house standard, so nothing is assumed`);
+  if (cover.truncated) bits.push(`<b>range truncated at 400 days</b>`);
+  bits.push("weekends are drawn but never counted as missing");
+  $("person-days-note").innerHTML = bits.join(" · ") + ".";
+}
+
+function renderPersonProjects(rows) {
+  const who = whoFilter();
+  const cls = (personById(who) || {}).rate_class || null;
+  const bill = cls && RATE[cls] ? RATE[cls].bill : null;
+
+  const by = {};
+  for (const r of rows) {
+    const b = (by[r.project_id] ||= { desk: 0, visit: 0, kinds: {} });
+    if (r.task_kind === "site_visit") b.visit += r.minutes; else b.desk += r.minutes;
+    b.kinds[r.task_kind] = (b.kinds[r.task_kind] || 0) + r.minutes;
+  }
+  const entries = Object.entries(by).sort((a, b) => (b[1].desk + b[1].visit) - (a[1].desk + a[1].visit));
+
+  $("person-proj-body").innerHTML = entries.length
+    ? entries.map(([pid, b]) => {
+        const total = b.desk + b.visit;
+        // Cost the desk hours only. Visit time is inside a per-visit fee, so
+        // multiplying it by an hourly rate would double-count the visit.
+        const cost = bill != null ? (b.desk / 60) * bill : null;
+        return `
+          <tr>
+            <td>${escapeHtml(labelFor(pid))}</td>
+            <td class="num">${hrs(b.desk)}</td>
+            <td class="num muted">${hrs(b.visit)}</td>
+            <td class="num"><strong>${hrs(total)}</strong></td>
+            <td class="num admin-hours-col${me.role === "admin" ? "" : " hidden"}">${
+              cost == null
+                ? `<span class="muted small" title="No rate class set for this person">—</span>`
+                : `$${Math.round(cost).toLocaleString()}`}</td>
+            <td class="small muted">${Object.entries(b.kinds)
+              .sort((x, y) => y[1] - x[1])
+              .map(([k]) => escapeHtml(KIND_LABEL[k] || k)).join(", ")}</td>
+          </tr>`;
+      }).join("")
+    : `<tr><td colspan="6" class="empty">No hours logged in this range.</td></tr>`;
 }
 
 function rateClassOf(employeeId) {
@@ -1264,11 +1437,12 @@ function rateClassOf(employeeId) {
 }
 
 function renderHoursStats() {
-  const total = hoursRows.reduce((a, r) => a + r.minutes, 0);
-  const projectCount = new Set(hoursRows.map((r) => r.project_id)).size;
-  const hourly = hoursRows.filter((r) => HOURLY_KINDS.has(r.task_kind))
-                          .reduce((a, r) => a + r.minutes, 0);
-  const nonBillable = hoursRows.filter((r) => !r.billable).reduce((a, r) => a + r.minutes, 0);
+  const rowsAll = personRows();
+  const total = rowsAll.reduce((a, r) => a + r.minutes, 0);
+  const projectCount = new Set(rowsAll.map((r) => r.project_id)).size;
+  const hourly = rowsAll.filter((r) => HOURLY_KINDS.has(r.task_kind))
+                        .reduce((a, r) => a + r.minutes, 0);
+  const nonBillable = rowsAll.filter((r) => !r.billable).reduce((a, r) => a + r.minutes, 0);
 
   $("hrs-stats").innerHTML = `
     <div class="stat"><div class="n">${hrs(total) || "0"}</div><div class="k">Hours logged</div></div>
@@ -1277,7 +1451,7 @@ function renderHoursStats() {
       <div class="k">Could bill hourly</div></div>
     <div class="stat"><div class="n">${hrs(total - hourly) || "0"}</div>
       <div class="k">Inside a fixed fee</div></div>
-    <div class="stat"><div class="n">${hoursVisits.length}</div><div class="k">Site visits</div></div>
+    <div class="stat"><div class="n">${personVisits().length}</div><div class="k">Site visits</div></div>
     ${nonBillable ? `<div class="stat warn"><div class="n">${hrs(nonBillable)}</div>
       <div class="k">Marked non-billable</div></div>` : ""}`;
 }
@@ -1297,7 +1471,8 @@ const KIND_ORDER = ["design", "review", "coordination", "site_visit", "rfi", "ad
 
 function renderHoursByProject() {
   const kindFilter = $("h-kind").value;
-  const rows = kindFilter ? hoursRows.filter((r) => r.task_kind === kindFilter) : hoursRows;
+  const scoped = personRows();
+  const rows = kindFilter ? scoped.filter((r) => r.task_kind === kindFilter) : scoped;
 
   const byProject = {};
   for (const r of rows) {
@@ -1330,7 +1505,7 @@ function renderHoursByProject() {
 }
 
 function renderAdditionalServices() {
-  const rows = hoursRows.filter((r) => HOURLY_KINDS.has(r.task_kind));
+  const rows = personRows().filter((r) => HOURLY_KINDS.has(r.task_kind));
   $("hrs-as-empty").classList.toggle("hidden", rows.length > 0);
   $("hrs-as-table").classList.toggle("hidden", rows.length === 0);
 
@@ -1358,7 +1533,7 @@ function renderAdditionalServices() {
 
 function renderVisitWorksheet() {
   if (me.role !== "admin") return;
-  const rows = hoursVisits;
+  const rows = personVisits();
   $("hrs-visits-empty").classList.toggle("hidden", rows.length > 0);
   $("hrs-visits-table").classList.toggle("hidden", rows.length === 0);
 
@@ -1399,6 +1574,13 @@ async function saveDisposition(visitId, value) {
 
 function renderMargin() {
   if (me.role !== "admin") return;
+  // Margin is a whole-project question: one person's share of the hours against
+  // the whole fee is not a margin, it is a misleading fraction. So this panel
+  // goes away entirely while a person filter is on rather than quietly
+  // answering a different question.
+  if (whoFilter()) { $("margin-card").classList.add("hidden"); return; }
+  $("margin-card").classList.remove("hidden");
+
   const byProject = {};
   for (const r of hoursRows) {
     const c = contractOf[r.project_id];
@@ -1437,12 +1619,26 @@ function renderMargin() {
 function initHoursControls() {
   $("h-kind").innerHTML = `<option value="">All work</option>` +
     Object.entries(KIND_LABEL).map(([k, l]) => `<option value="${k}">${l}</option>`).join("");
+
+  if (me.role === "admin") {
+    $("h-who-field").classList.remove("hidden");
+    // people is loaded in boot() for admins, before this runs.
+    $("h-who").innerHTML = `<option value="">Everyone</option>` +
+      people.filter((p) => p.active)
+            .map((p) => `<option value="${p.id}">${escapeHtml(p.full_name)}</option>`).join("");
+    // Re-render rather than re-fetch: the rows for the range are already here,
+    // and a round trip per click would make the filter feel broken.
+    $("h-who").addEventListener("change", renderHours);
+  }
+
   setQuickRange("mtd");
   $("h-range").addEventListener("change", () => { setQuickRange($("h-range").value); loadHours(); });
   for (const id of ["h-from", "h-to"]) {
     $(id).addEventListener("change", loadHours);
   }
   $("h-kind").addEventListener("change", renderHoursByProject);
+  $("person-target").addEventListener("input", () => renderPersonDays(
+    coverage(personRows(), hoursRange().from, hoursRange().to)));
 }
 
 // ----------------------------------------------------------- proposals
@@ -1765,6 +1961,13 @@ async function loadPeople() {
             ${["admin", "employee", "contractor"].map((r) =>
               `<option value="${r}"${r === p.role ? " selected" : ""}>${r}</option>`).join("")}
           </select></td>
+      <!-- Not the same thing as role. Role is a permission; this is which §5.2
+           rate their hours cost at, and it is nobody's default to guess. -->
+      <td><select data-rateclass="${p.id}">
+            <option value=""${!p.rate_class ? " selected" : ""}>— not set</option>
+            <option value="engineer"${p.rate_class === "engineer" ? " selected" : ""}>engineer</option>
+            <option value="drafter"${p.rate_class === "drafter" ? " selected" : ""}>drafter</option>
+          </select></td>
       <td><input type="checkbox" data-active="${p.id}" ${p.active ? "checked" : ""}
                  ${lock ? "disabled" : ""}></td>
       <td class="num">${
@@ -1786,6 +1989,9 @@ async function loadPeople() {
   // be left with nobody able to administer it.
   body.querySelectorAll("[data-role]").forEach((s) =>
     s.addEventListener("change", () => savePerson(s.dataset.role, { role: s.value })));
+  body.querySelectorAll("[data-rateclass]").forEach((s) =>
+    s.addEventListener("change", () =>
+      savePerson(s.dataset.rateclass, { rate_class: s.value || null })));
   body.querySelectorAll("[data-active]").forEach((c) =>
     c.addEventListener("change", () => savePerson(c.dataset.active, { active: c.checked })));
   body.querySelectorAll("[data-assign]").forEach((b) =>

@@ -268,6 +268,23 @@
     background: var(--grey-bg); border-left: 3px solid var(--clay);
   }
 
+  /* Day-by-day coverage. One cell per day in the range, so a gap reads at a
+     glance — the failure mode of a tracker is missing hours, not wrong ones. */
+  .daygrid { display: flex; flex-wrap: wrap; gap: 4px; }
+  .daygrid .d {
+    min-width: 56px; padding: 5px 6px; text-align: center;
+    border: 1px solid var(--line-strong); background: var(--card);
+  }
+  .daygrid .d .dt { font-size: 10px; color: var(--muted); letter-spacing: .04em; }
+  .daygrid .d .h { font-family: var(--mono); font-size: 13px; font-weight: 700; }
+  .daygrid .d.none { background: var(--err-bg); border-color: var(--err); }
+  .daygrid .d.none .h { color: var(--err); }
+  .daygrid .d.short { background: var(--warn-bg); border-color: var(--warn); }
+  .daygrid .d.short .h { color: var(--warn); }
+  .daygrid .d.ok { background: var(--ok-bg); border-color: var(--ok); }
+  .daygrid .d.weekend, .daygrid .d.future { background: var(--grey-bg); border-style: dashed; }
+  .daygrid .d.weekend .h, .daygrid .d.future .h { color: var(--muted); font-weight: 400; }
+
   .muted { color: var(--muted); }
   .small { font-size: 13px; }
   .right { text-align: right; }
@@ -747,6 +764,12 @@
             <label for="h-kind">Work</label>
             <select id="h-kind"></select>
           </div>
+          <!-- Admin only. An employee is always looking at themselves, so the
+               control would be a one-option select. -->
+          <div class="field hidden" id="h-who-field">
+            <label for="h-who">Who</label>
+            <select id="h-who"></select>
+          </div>
         </div>
         <div class="stats" id="hrs-stats" style="margin-top:14px"></div>
         <p class="small muted" style="margin:12px 0 0">
@@ -757,6 +780,47 @@
           never hourly, never derived from distance. Nothing here has been
           invoiced, and nothing here creates an invoice: Xero is the system of
           record, and line-item wording is agreed before an invoice exists.
+        </p>
+      </div>
+
+      <!-- Appears only when one person is selected. Everything above and below
+           is filtered to them as well. -->
+      <div class="card hidden" id="person-card">
+        <h2><span id="person-name"></span> <span class="muted" id="person-range"></span></h2>
+        <div class="stats" id="person-stats" style="margin-top:14px"></div>
+
+        <h3 style="margin:18px 14px 0;font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted)">
+          Day by day
+          <label class="small muted" style="margin-left:12px;font-weight:400;text-transform:none;letter-spacing:0">
+            flag days under
+            <input id="person-target" type="number" step="0.5" min="0" placeholder="—"
+                   style="width:64px;padding:2px 6px;text-align:right"> h
+          </label>
+        </h3>
+        <div id="person-days" style="margin:10px 14px 0"></div>
+        <p class="small muted" style="margin:10px 14px 0" id="person-days-note"></p>
+
+        <div class="grid-wrap" style="margin-top:16px">
+          <table id="person-proj-table">
+            <thead>
+              <tr>
+                <th>Project</th><th class="num">Desk h</th><th class="num">Visit h</th>
+                <th class="num">Total h</th>
+                <th class="num admin-hours-col hidden">Cost at their rate</th>
+                <th>Work</th>
+              </tr>
+            </thead>
+            <tbody id="person-proj-body"></tbody>
+          </table>
+        </div>
+        <p class="small muted" style="margin:12px 14px 14px">
+          <b>Cost is internal, and it is cost.</b> Hours &times; the &sect;5.2 rate for
+          their class &mdash; what the work cost to produce, not a fee and not
+          something to invoice. Never goes in a client document (&sect;5.1).
+          <b>Visit hours are not desk hours</b>: a site visit bills per visit at the
+          contracted rate, so time spent on one is already inside that fee.
+          Fee-against-effort is a whole-project question and stays unfiltered
+          &mdash; clear the Who filter to see it.
         </p>
       </div>
 
@@ -832,7 +896,7 @@
         </p>
       </div>
 
-      <div class="card admin-hours hidden">
+      <div class="card admin-hours hidden" id="margin-card">
         <h2>Fee against effort
           <span class="muted">&mdash; internal cost reference, not for client documents</span></h2>
         <div class="grid-wrap">
@@ -908,13 +972,16 @@
       <h2>People <span class="muted">— admin</span></h2>
       <table>
         <thead>
-          <tr><th>Name</th><th>Role</th><th>Active</th>
+          <tr><th>Name</th><th>Role</th><th>Rate class</th><th>Active</th>
               <th class="num">Projects</th><th></th></tr>
         </thead>
         <tbody id="people-body"></tbody>
       </table>
       <p class="small muted" style="margin:10px 0 0">
         New sign-ups arrive inactive and see nothing until you switch them on.
+        <b>Rate class is separate from role</b>: role is a permission, rate class is
+        which &sect;5.2 rate their hours cost at ($175 engineer, $90 drafter). It
+        starts unset, and until you set it their hours cannot be costed at all.
         <b>Staff (admin and employee) see every project automatically</b>, including
         new ones and the overhead buckets — there is nothing to assign.
         <b>Contractors see only the projects you assign them</b>, and never the
