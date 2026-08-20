@@ -191,7 +191,7 @@ async function boot(uid) {
   dayDate = ymd(new Date());
 
   await loadProjects();
-  await Promise.all([loadRunning(), loadDay(), loadWeek()]);
+  await Promise.all([loadRunning(), loadDay(), loadWeek(), loadDrafts()]);
   if (me.role === "admin") {
     $("admin-card").classList.remove("hidden");
     $("tab-people-btn").classList.remove("hidden");
@@ -530,6 +530,9 @@ async function loadDay() {
     .select("id, project_id, task_kind, notes, minutes, started_at, ended_at, billable")
     .eq("employee_id", me.id)
     .eq("work_date", dayDate)
+    // Drafts live in their own panel until accepted. A reconstructed guess
+    // sitting in the day total would be indistinguishable from a logged hour.
+    .eq("confirmed", true)
     .order("created_at", { ascending: true });
 
   if (error) return fail("Loading the day", error);
@@ -633,6 +636,109 @@ $("add-btn").addEventListener("click", async () => {
   }
 });
 
+// ------------------------------------------------------- draft entries
+// Days reconstructed by tools/backfill-evidence.mjs from records that already
+// exist — file mtimes under a project folder, sent mail, visit and deliverable
+// logs. They land confirmed=false and are excluded from the day panel, the week
+// grid and every report until a person accepts one.
+//
+// The hours are inferred. Nothing in any of those sources records duration, so
+// the suggestion is a starting point and the evidence is shown verbatim beside
+// it — the point is to make a day cheap to reconstruct, not to invent a
+// timesheet.
+
+let drafts = [];
+
+async function loadDrafts() {
+  const { data, error } = await sb
+    .from("time_entries")
+    .select("id, project_id, work_date, minutes, task_kind, notes, source")
+    .eq("employee_id", me.id)
+    .eq("confirmed", false)
+    .order("work_date", { ascending: false })
+    .order("id", { ascending: true });
+
+  if (error) return fail("Loading reconstructed days", error);
+  drafts = data || [];
+  await ensureLabels(drafts.map((d) => d.project_id));
+  renderDrafts();
+}
+
+function renderDrafts() {
+  $("drafts-card").classList.toggle("hidden", drafts.length === 0);
+  if (!drafts.length) return;
+
+  const hoursTotal = drafts.reduce((a, d) => a + d.minutes, 0);
+  $("drafts-count").textContent =
+    `— ${drafts.length} to review, about ${hrs(hoursTotal)} h`;
+
+  $("drafts-body").innerHTML = drafts.map((d) => `
+    <tr data-draft="${d.id}">
+      <td class="small">${escapeHtml(d.work_date)}</td>
+      <td>${escapeHtml(labelFor(d.project_id))}</td>
+      <td class="num"><input type="number" step="0.25" min="0.25" data-dhours="${d.id}"
+            value="${(d.minutes / 60).toFixed(2).replace(/\.?0+$/, "")}"
+            style="width:72px;text-align:right"></td>
+      <td><select data-dkind="${d.id}" style="padding:3px 6px;font-size:13px">
+        ${Object.entries(KIND_LABEL).map(([k, l]) =>
+          `<option value="${k}"${k === d.task_kind ? " selected" : ""}>${l}</option>`).join("")}
+      </select></td>
+      <td class="small muted">${escapeHtml(d.notes || "")}</td>
+      <td class="right" style="white-space:nowrap">
+        <button class="btn sm" data-dkeep="${d.id}">Keep</button>
+        <button class="btn ghost sm" data-ddrop="${d.id}">Drop</button>
+      </td>
+    </tr>`).join("");
+
+  $("drafts-body").querySelectorAll("[data-dkeep]").forEach((b) =>
+    b.addEventListener("click", () => keepDraft(b.dataset.dkeep)));
+  $("drafts-body").querySelectorAll("[data-ddrop]").forEach((b) =>
+    b.addEventListener("click", () => dropDraft(b.dataset.ddrop)));
+}
+
+async function keepDraft(id) {
+  const hoursInput = $(`drafts-body`).querySelector(`[data-dhours="${id}"]`);
+  const kind = $(`drafts-body`).querySelector(`[data-dkind="${id}"]`).value;
+  const parsed = parseFloat(hoursInput.value);
+  if (!(parsed > 0)) return toast("Enter hours greater than zero.", "err");
+
+  // source stays 'backfill'. Accepting it means the hours are now Ben's number,
+  // not that the entry stopped being a reconstruction.
+  const { data, error } = await sb.from("time_entries")
+    .update({ confirmed: true, minutes: Math.round(parsed * 60), task_kind: kind })
+    .eq("id", id)
+    .select("id");
+  if (error) return fail("Keeping that entry", error);
+  if (!data || !data.length) return toast("That entry is no longer there.", "warn");
+
+  drafts = drafts.filter((d) => String(d.id) !== String(id));
+  renderDrafts();
+  await Promise.all([loadDay(), loadWeek()]);
+  toast("Kept.");
+}
+
+async function dropDraft(id) {
+  const { data, error } = await sb.from("time_entries").delete().eq("id", id).select("id");
+  if (error) return fail("Dropping that entry", error);
+  if (!data || !data.length) return toast("That entry is no longer there.", "warn");
+  drafts = drafts.filter((d) => String(d.id) !== String(id));
+  renderDrafts();
+  toast("Dropped.");
+}
+
+$("drafts-dismiss-all").addEventListener("click", async () => {
+  if (!drafts.length) return;
+  if (!confirm(`Drop all ${drafts.length} reconstructed days? They can be rebuilt ` +
+               `by running tools/backfill-evidence.mjs again, but anything you have ` +
+               `already corrected here is lost.`)) return;
+  const ids = drafts.map((d) => d.id);
+  const { data, error } = await sb.from("time_entries").delete().in("id", ids).select("id");
+  if (error) return fail("Dropping the drafts", error);
+  drafts = [];
+  renderDrafts();
+  toast(`Dropped ${(data || []).length}.`);
+});
+
 // ------------------------------------------------------------ week grid
 
 $("wk-prev").addEventListener("click", () => { weekStart = addDays(weekStart, -7); loadWeek(); });
@@ -645,6 +751,7 @@ async function loadWeek() {
     .from("time_entries")
     .select("id, project_id, work_date, minutes, started_at, ended_at")
     .eq("employee_id", me.id)
+    .eq("confirmed", true)                 // drafts are not hours yet
     .gte("work_date", from)
     .lte("work_date", to)
     .order("id", { ascending: true });     // stable order: saveCell picks manual[0]
@@ -808,6 +915,9 @@ async function saveCell(inp) {
       .eq("employee_id", me.id)
       .eq("project_id", projectId)
       .eq("work_date", workDate)
+      // Same filter as the grid it is reconciling against. Without it, typing
+      // into a cell would silently edit a draft entry the cell never showed.
+      .eq("confirmed", true)
       .order("id", { ascending: true });
     if (readErr) return fail("Checking that day", readErr);
 

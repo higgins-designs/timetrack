@@ -502,6 +502,32 @@
       <div id="proj-context" class="hidden context"></div>
     </div>
 
+    <!-- Reconstructed days awaiting a decision. Hidden entirely when empty, so
+         it costs nothing once the backlog is cleared. -->
+    <div class="card hidden" id="drafts-card">
+      <h2>
+        Reconstructed days <span class="muted" id="drafts-count"></span>
+        <button class="btn ghost sm" id="drafts-dismiss-all" style="margin-left:auto">Dismiss all</button>
+      </h2>
+      <p class="small muted" style="margin:14px 14px 0">
+        Built from what already records your work &mdash; files you saved under a
+        project folder, mail you sent about it, visits and deliverables.
+        <b>The hours are a guess</b>; no source records how long anything took.
+        Correct them, then Keep. Nothing here counts towards any total until you do.
+      </p>
+      <div class="grid-wrap">
+        <table id="drafts-table">
+          <thead>
+            <tr>
+              <th>Date</th><th>Project</th><th class="num">Hours</th><th>Work</th>
+              <th>What the evidence was</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="drafts-body"></tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- the selected day (defaults to today; clicking a week cell moves it) -->
     <div class="card">
       <h2>
