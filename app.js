@@ -1148,15 +1148,17 @@ function taskRow(t) {
         <input type="date" data-tdue="${t.id}" value="${t.due_date || ""}"
                title="Due date — clear it to move this to No date">
         <select data-twho="${t.id}" title="Who is doing it">
-          <option value="">anyone</option>
+          <option value="">Unassigned</option>
           ${people.filter((p) => p.active).map((p) =>
             `<option value="${p.id}"${p.id === t.assignee_id ? " selected" : ""}
              >${escapeHtml(p.full_name.split(" ")[0])}</option>`).join("")}
         </select>
+        <!-- A bare "!" told you nothing about which state you were in. -->
         <button class="btn ghost sm" data-tflag="${t.id}"
-                title="${t.priority === "high" ? "Back to normal" : "Flag as high priority"}"
-                style="${t.priority === "high" ? "color:var(--warn);border-color:var(--warn)" : ""}">!</button>
-        <button class="btn ghost sm" data-tdrop="${t.id}" title="Drop it">&times;</button>
+                title="${t.priority === "high" ? "Set back to normal priority" : "Mark high priority"}"
+                style="${t.priority === "high" ? "color:var(--warn);border-color:var(--warn)" : ""}"
+          >${t.priority === "high" ? "High" : "Normal"}</button>
+        <button class="btn ghost sm" data-tdrop="${t.id}" title="Drop this task">Drop</button>
       </div>
     </div>`;
 }
@@ -1472,7 +1474,7 @@ const RATE = {
 // The kinds §5.3 allows to bill hourly. Everything else is inside the fee.
 const HOURLY_KINDS = new Set(["rfi", "review", "other"]);
 const DISPOSITION = {
-  "": "— not decided",
+  "": "Undecided",
   inside_fee: "Inside the fee",
   billable: "Bills per visit",
   not_billable: "Not billable",
@@ -1754,7 +1756,7 @@ function renderHoursStats() {
     <div class="stat"><div class="n">${hrs(total) || "0"}</div><div class="k">Hours logged</div></div>
     <div class="stat"><div class="n">${projectCount}</div><div class="k">Projects</div></div>
     <div class="stat"><div class="n">${hrs(hourly) || "0"}</div>
-      <div class="k">Could bill hourly</div></div>
+      <div class="k">Potential additional-service hours</div></div>
     <div class="stat"><div class="n">${hrs(total - hourly) || "0"}</div>
       <div class="k">Inside a fixed fee</div></div>
     <div class="stat"><div class="n">${personVisits().length}</div><div class="k">Site visits</div></div>
@@ -2027,7 +2029,13 @@ $("prop-search").addEventListener("input", renderProposals);
 
 let visits = [];
 
-const OUTCOME_LABEL = { pending: "Pending", passed: "Passed", failed: "Failed", na: "n/a" };
+// Stored values stay pending/passed/failed/na (a CHECK constraint), but the
+// wording does not: "Passed" and "Failed" imply a certification an
+// observation visit does not carry.
+const OUTCOME_LABEL = {
+  pending: "Not yet reported", passed: "No corrections noted",
+  failed: "Corrections required", na: "Informational / n/a",
+};
 // HD observes; it does not inspect. This list is the vocabulary that ends up in
 // a visit record and, from there, one copy-paste from an invoice description.
 const COMMON_TYPES = [

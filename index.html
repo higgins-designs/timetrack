@@ -415,6 +415,12 @@
        negative margin. When that padding drops to 10px the -22px stays, so the
        strip overhangs 12px each side and the whole page scrolls sideways. */
     nav.tabs { margin: -10px -10px 16px; padding: 0 10px; }
+    /* Task controls drop under the task instead of beside it. Labelling the
+       priority and drop buttons made them wider than the "!" and "×" they
+       replaced, which pushed the row 68px past the screen. */
+    .trow { flex-wrap: wrap; }
+    .trow .ctl { width: 100%; margin-left: 26px; flex-wrap: wrap; }
+    .trow .ctl input[type=date] { width: 132px; }
   }
 </style>
 <script>
@@ -798,10 +804,10 @@
           <div class="field">
             <label for="v-outcome">Outcome</label>
             <select id="v-outcome">
-              <option value="pending">Pending</option>
-              <option value="passed">Passed</option>
-              <option value="failed">Failed</option>
-              <option value="na">n/a</option>
+              <option value="pending">Not yet reported</option>
+              <option value="passed">No corrections noted</option>
+              <option value="failed">Corrections required</option>
+              <option value="na">Informational / n/a</option>
             </select>
           </div>
           <div class="field grow">
@@ -989,7 +995,7 @@
             <thead>
               <tr>
                 <th>Date</th><th>Project</th><th>What</th><th>Who</th>
-                <th class="num">Contracted</th><th>Basis</th><th>Bills?</th>
+                <th class="num">Contracted</th><th>Basis</th><th>Billable?</th>
               </tr>
             </thead>
             <tbody id="hrs-visits-body"></tbody>
@@ -999,7 +1005,7 @@
         <p class="small muted" style="margin:12px 0 0">
           A visit having happened is not the same as it being billable &mdash; a
           design-phase look at existing conditions is usually inside the fixed
-          fee. <b>Bills?</b> is yours to set and starts blank on purpose; listing
+          fee. <b>Billable?</b> is yours to set and starts blank on purpose; listing
           every visit as billable manufactures charges. The contracted rate comes
           from a signed proposal whose link to this job you have confirmed, and
           from nowhere else.
