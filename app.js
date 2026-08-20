@@ -1016,12 +1016,20 @@ function showTab(name) {
 // read-only dashboard mirror; `tasks` is the thing you work from.
 //
 // Buckets are derived HERE, every render, from due_date against today's LOCAL
-// date. They are never stored. The dashboard mirror stores them, and that is
-// exactly how the Overview came to show 13 overdue when 26 were: ten items had
-// aged out of "stale" and three out of "today" without anything recomputing.
+// date, and are never stored.
+//
+// `commitments` stores its bucket at import time. Checked against the Austin
+// date it was written on, it was exactly right — 0 of 85 rows disagreed. The
+// problem is that it can only stay right until midnight: the value is a fact
+// about the day it was written, and nothing recomputes it. Deriving costs
+// nothing and cannot drift.
 //
 // Local, not UTC: the server's current_date rolls over at 7pm Austin, so a task
 // due today would read as overdue all evening.
+//
+// One deliberate difference from the dashboard: it has a "stale" bucket for
+// anything more than 14 days late, and this does not. Late is late — a separate
+// heading for the oldest work is a place for it to go quiet.
 
 let tasks = [];
 let todoBucketFilter = "";     // set by clicking a tile
@@ -1275,10 +1283,11 @@ const PHASE_COLOR = {
 };
 
 async function loadOverview() {
-  // Reads `tasks`, not `commitments`. The mirror stores its buckets, so it was
-  // reporting 13 overdue when 26 were — ten had aged out of "stale" and three
-  // out of "today" with nothing recomputing them. Buckets here are derived on
-  // every render from the local date.
+  // Reads `tasks`, not `commitments`. The mirror's stored buckets were correct
+  // on the day they were written and go stale silently afterwards; these are
+  // derived from the local date on every render. It also folds the dashboard's
+  // "stale" bucket into Overdue, so the count here is higher than the mirror's
+  // by however many items are more than a fortnight late.
   const { data: vis, error } = await sb
     .from("site_visits").select("id, project_id, visit_date, start_time, attendee_name, visit_type")
     .gte("visit_date", ymd(new Date())).order("visit_date").limit(12);
@@ -1318,8 +1327,8 @@ function seedWeekRows(openTasks, visits) {
 }
 
 // Every tile is a button through to that list. They have always looked like
-// buttons; until now pressing one did nothing, so you could read "13 overdue"
-// and have no way to reach the 13.
+// buttons; until now pressing one did nothing, so you could read the overdue
+// count and have no way to reach the items behind it.
 function renderOvTiles(open) {
   const n = (b) => open.filter((t) => bucketOf(t) === b).length;
   $("ov-tiles").innerHTML = TODO_BUCKETS.map((b) => `
