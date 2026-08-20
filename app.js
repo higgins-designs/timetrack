@@ -200,6 +200,8 @@ async function boot(uid) {
   }
   initVisitForm();   // needs projects, and people if this is an admin
   initHoursControls();
+  initTodo();        // needs projects and people too
+  await loadTasks();
   renderProjectContext();
   await loadOverview();   // Overview is the landing tab
 }
@@ -999,46 +1001,297 @@ document.querySelectorAll("#tabs .tab").forEach((b) =>
 function showTab(name) {
   document.querySelectorAll("#tabs .tab").forEach((b) =>
     b.classList.toggle("active", b.dataset.tab === name));
-  for (const p of ["overview", "time", "visits", "hours", "proposals", "people"]) {
+  for (const p of ["overview", "todo", "time", "visits", "hours", "proposals", "people"]) {
     $(`panel-${p}`).classList.toggle("hidden", p !== name);
   }
   if (name === "overview") loadOverview();
+  if (name === "todo") loadTasks();
   if (name === "visits") loadVisits();
   if (name === "hours") loadHours();
   if (name === "proposals") loadProposals();
+}
+
+// ---------------------------------------------------------------- to do
+// The app owns this list (Ben, 2026-08-19). `commitments` is still the
+// read-only dashboard mirror; `tasks` is the thing you work from.
+//
+// Buckets are derived HERE, every render, from due_date against today's LOCAL
+// date. They are never stored. The dashboard mirror stores them, and that is
+// exactly how the Overview came to show 13 overdue when 26 were: ten items had
+// aged out of "stale" and three out of "today" without anything recomputing.
+//
+// Local, not UTC: the server's current_date rolls over at 7pm Austin, so a task
+// due today would read as overdue all evening.
+
+let tasks = [];
+let todoBucketFilter = "";     // set by clicking a tile
+
+const TODO_BUCKETS = [
+  { key: "overdue", label: "Overdue", cls: "late" },
+  { key: "today", label: "Today", cls: "now" },
+  { key: "this_week", label: "Next 7 days", cls: "" },
+  { key: "later", label: "Later", cls: "" },
+  { key: "someday", label: "No date", cls: "" },
+];
+
+function bucketOf(task) {
+  if (task.status !== "open") return "done";
+  if (!task.due_date) return "someday";
+  const today = ymd(new Date());
+  if (task.due_date < today) return "overdue";
+  if (task.due_date === today) return "today";
+  return task.due_date <= ymd(addDays(new Date(), 7)) ? "this_week" : "later";
+}
+
+async function loadTasks() {
+  const { data, error } = await sb
+    .from("tasks")
+    .select(`id, title, project_id, due_date, status, priority, assignee_id,
+             kind, notes, source, completed_at`)
+    .order("due_date", { ascending: true, nullsFirst: false })
+    .order("id", { ascending: true });
+  if (error) return fail("Loading the to-do list", error);
+  tasks = data || [];
+  await ensureLabels(tasks.map((t) => t.project_id).filter(Boolean));
+  renderTodoProjectFilter();
+  renderTodo();
+  renderTodoBadge();
+}
+
+// The count on the tab itself, so you do not have to open it to know.
+function renderTodoBadge() {
+  const late = tasks.filter((t) => t.status === "open" && bucketOf(t) === "overdue").length;
+  const el = $("tab-todo-count");
+  el.textContent = late ? ` ${late}` : "";
+  el.style.color = late ? "var(--clay-soft)" : "";
+}
+
+function visibleTasks() {
+  const who = $("td-filter-who").value;
+  const proj = $("td-filter-proj").value;
+  const showDone = $("td-show-done").checked;
+  return tasks.filter((t) =>
+    (showDone || t.status === "open") &&
+    (!who || (who === "none" ? !t.assignee_id : t.assignee_id === who)) &&
+    (!proj || String(t.project_id) === proj));
+}
+
+function renderTodo() {
+  const rows = visibleTasks();
+  const counts = {};
+  for (const t of rows) counts[bucketOf(t)] = (counts[bucketOf(t)] || 0) + 1;
+
+  $("td-scope").textContent = `· ${rows.filter((t) => t.status === "open").length} open`;
+
+  // Tiles are buttons. Pressing one narrows the list below; pressing it again
+  // clears. This is the thing that looked clickable and was not.
+  $("td-tiles").innerHTML = TODO_BUCKETS.map((b) => `
+    <div class="stat click ${b.cls === "late" ? "fail" : b.cls === "now" ? "warn" : ""}
+                ${todoBucketFilter === b.key ? "on" : ""}"
+         role="button" tabindex="0" data-bucket="${b.key}"
+         title="Show only ${b.label.toLowerCase()}">
+      <div class="n">${counts[b.key] || 0}</div><div class="k">${b.label}</div>
+    </div>`).join("");
+  $("td-tiles").querySelectorAll("[data-bucket]").forEach((el) => {
+    const pick = () => {
+      todoBucketFilter = todoBucketFilter === el.dataset.bucket ? "" : el.dataset.bucket;
+      renderTodo();
+    };
+    el.addEventListener("click", pick);
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); }
+    });
+  });
+
+  const shown = todoBucketFilter ? rows.filter((t) => bucketOf(t) === todoBucketFilter) : rows;
+  const groups = [...TODO_BUCKETS, { key: "done", label: "Finished", cls: "" }]
+    .map((b) => [b, shown.filter((t) => bucketOf(t) === b.key)])
+    .filter(([, list]) => list.length);
+
+  $("td-empty").classList.toggle("hidden", groups.length > 0);
+  $("td-lists").innerHTML = groups.map(([b, list]) => `
+    <div class="tgroup ${b.cls}">
+      <div class="gh">${b.label} <span>${list.length}</span></div>
+      ${list.map(taskRow).join("")}
+    </div>`).join("");
+
+  wireTaskRows();
+}
+
+function taskRow(t) {
+  const who = people.find((p) => p.id === t.assignee_id);
+  const done = t.status !== "open";
+  const bits = [];
+  if (t.project_id) {
+    bits.push(`<a data-goproj="${t.project_id}">${escapeHtml(labelFor(t.project_id))}</a>`);
+  }
+  if (t.notes) bits.push(escapeHtml(t.notes));
+  if (t.source === "dashboard") bits.push(`<span class="tag">from the dashboard</span>`);
+
+  return `
+    <div class="trow ${done ? "done" : ""} ${bucketOf(t) === "overdue" ? "overdue" : ""}">
+      <input type="checkbox" data-tdone="${t.id}" ${done ? "checked" : ""}
+             title="${done ? "Reopen" : "Mark finished"}">
+      <div class="body">
+        <div class="ttitle ${t.priority === "high" && !done ? "hi" : ""}">${escapeHtml(t.title)}</div>
+        ${bits.length ? `<div class="meta">${bits.join(" · ")}</div>` : ""}
+      </div>
+      <div class="ctl">
+        <input type="date" data-tdue="${t.id}" value="${t.due_date || ""}"
+               title="Due date — clear it to move this to No date">
+        <select data-twho="${t.id}" title="Who is doing it">
+          <option value="">anyone</option>
+          ${people.filter((p) => p.active).map((p) =>
+            `<option value="${p.id}"${p.id === t.assignee_id ? " selected" : ""}
+             >${escapeHtml(p.full_name.split(" ")[0])}</option>`).join("")}
+        </select>
+        <button class="btn ghost sm" data-tflag="${t.id}"
+                title="${t.priority === "high" ? "Back to normal" : "Flag as high priority"}"
+                style="${t.priority === "high" ? "color:var(--warn);border-color:var(--warn)" : ""}">!</button>
+        <button class="btn ghost sm" data-tdrop="${t.id}" title="Drop it">&times;</button>
+      </div>
+    </div>`;
+}
+
+function wireTaskRows() {
+  const box = $("td-lists");
+  box.querySelectorAll("[data-tdone]").forEach((c) =>
+    c.addEventListener("change", () => saveTask(c.dataset.tdone,
+      c.checked
+        ? { status: "done", completed_at: new Date().toISOString() }
+        : { status: "open", completed_at: null })));
+  box.querySelectorAll("[data-tdue]").forEach((i) =>
+    i.addEventListener("change", () => saveTask(i.dataset.tdue, { due_date: i.value || null })));
+  box.querySelectorAll("[data-twho]").forEach((s) =>
+    s.addEventListener("change", () => saveTask(s.dataset.twho, { assignee_id: s.value || null })));
+  box.querySelectorAll("[data-tflag]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const t = tasks.find((x) => String(x.id) === String(b.dataset.tflag));
+      saveTask(b.dataset.tflag, { priority: t && t.priority === "high" ? "normal" : "high" });
+    }));
+  box.querySelectorAll("[data-tdrop]").forEach((b) =>
+    b.addEventListener("click", () => dropTask(b.dataset.tdrop)));
+  box.querySelectorAll("[data-goproj]").forEach((a) =>
+    a.addEventListener("click", () => goToProject(a.dataset.goproj)));
+}
+
+async function saveTask(id, patch) {
+  const { data, error } = await sb.from("tasks").update(patch).eq("id", id).select("id");
+  if (error) return fail("Saving that task", error);
+  if (!data || !data.length) return toast("That did not save — the task is not yours to edit.", "warn");
+  await loadTasks();
+}
+
+async function dropTask(id) {
+  const t = tasks.find((x) => String(x.id) === String(id));
+  if (!confirm(`Drop "${t ? t.title : "this task"}"?\n\nIt stays on record as dropped ` +
+               `rather than being deleted, so you can still see it was asked for.`)) return;
+  // 'dropped' rather than DELETE: losing the record that something was ever
+  // asked for is worse than a slightly longer list.
+  const { data, error } = await sb.from("tasks")
+    .update({ status: "dropped", completed_at: null }).eq("id", id).select("id");
+  if (error) return fail("Dropping that task", error);
+  if (!data || !data.length) return toast("That did not save — the task is not yours to edit.", "warn");
+  await loadTasks();
+  toast("Dropped.");
+}
+
+$("td-add").addEventListener("click", async () => {
+  const title = $("td-title").value.trim();
+  if (!title) return toast("Say what needs doing first.", "err");
+  $("td-add").disabled = true;
+  try {
+    const { error } = await sb.from("tasks").insert({
+      title,
+      project_id: $("td-proj").value ? Number($("td-proj").value) : null,
+      due_date: $("td-due").value || null,
+      assignee_id: $("td-who").value || null,
+      priority: $("td-priority").value,
+      created_by: me.id,
+      source: "app",
+    });
+    if (error) return fail("Adding the task", error);
+    $("td-title").value = "";
+    $("td-due").value = "";
+    setCombo("td-proj", null);
+    await loadTasks();
+    toast("Added.");
+  } finally {
+    $("td-add").disabled = false;
+  }
+});
+
+$("td-title").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); $("td-add").click(); }
+});
+
+function initTodo() {
+  const whoOpts = `<option value="">anyone</option>` +
+    people.filter((p) => p.active)
+          .map((p) => `<option value="${p.id}"${p.id === me.id ? " selected" : ""}
+           >${escapeHtml(p.full_name)}</option>`).join("");
+  $("td-who").innerHTML = whoOpts;
+  $("td-filter-who").innerHTML =
+    `<option value="">Everyone</option><option value="none">Nobody yet</option>` +
+    people.filter((p) => p.active)
+          .map((p) => `<option value="${p.id}">${escapeHtml(p.full_name)}</option>`).join("");
+  fillProjectCombo($("td-proj"), projects);
+  for (const id of ["td-filter-who", "td-filter-proj", "td-show-done"]) {
+    $(id).addEventListener("change", renderTodo);
+  }
+}
+
+// Filter the to-do list to a project and show it. Called from anywhere a
+// project name appears, so a name on screen is a way in rather than a label.
+function goToProject(projectId) {
+  const sel = $("td-filter-proj");
+  if (![...sel.options].some((o) => o.value === String(projectId))) {
+    sel.insertAdjacentHTML("beforeend",
+      `<option value="${projectId}">${escapeHtml(labelFor(projectId))}</option>`);
+  }
+  sel.value = String(projectId);
+  todoBucketFilter = "";
+  showTab("todo");
+  renderTodo();
+}
+
+function renderTodoProjectFilter() {
+  const sel = $("td-filter-proj");
+  const keep = sel.value;
+  const ids = [...new Set(tasks.map((t) => t.project_id).filter(Boolean))]
+    .map(String).sort((a, b) => labelFor(a).localeCompare(labelFor(b)));
+  sel.innerHTML = `<option value="">All projects</option>` +
+    ids.map((id) => `<option value="${id}">${escapeHtml(labelFor(id))}</option>`).join("");
+  if (keep) sel.value = keep;
 }
 
 // -------------------------------------------------------------- overview
 // Mirrors the project dashboard's front page: the urgency tiles, what is
 // overdue, what is booked, and where the work sits by phase.
 
-const BUCKET_LABEL = {
-  overdue: "Overdue", today: "Today", this_week: "This week",
-  next_week: "Next week", later: "Later", vague: "No date", stale: "Stale",
-};
 const PHASE_COLOR = {
   waiting: "#75695F", "initial design": "#4E8A94", revision: "#C08D7C",
   sent: "#3E7A4E", CA: "#16424B",
 };
 
 async function loadOverview() {
-  const [{ data: com, error: e1 }, { data: vis, error: e2 }] = await Promise.all([
-    sb.from("commitments").select("id, project_id, project_no, promise, due_date, days_left, urgency, bucket"),
-    sb.from("site_visits").select("id, project_id, visit_date, start_time, attendee_name, visit_type")
-      .gte("visit_date", ymd(new Date())).order("visit_date").limit(12),
-  ]);
-  if (e1) return fail("Loading commitments", e1);
-  if (e2) return fail("Loading the schedule", e2);
-
-  const commitments = com || [];
-  await ensureLabels(commitments.map((c) => c.project_id).filter(Boolean));
+  // Reads `tasks`, not `commitments`. The mirror stores its buckets, so it was
+  // reporting 13 overdue when 26 were — ten had aged out of "stale" and three
+  // out of "today" with nothing recomputing them. Buckets here are derived on
+  // every render from the local date.
+  const { data: vis, error } = await sb
+    .from("site_visits").select("id, project_id, visit_date, start_time, attendee_name, visit_type")
+    .gte("visit_date", ymd(new Date())).order("visit_date").limit(12);
+  if (error) return fail("Loading the schedule", error);
+  if (!tasks.length) await loadTasks();
   await ensureLabels((vis || []).map((v) => v.project_id));
 
-  seedWeekRows(commitments, vis || []);
-  renderOvTiles(commitments);
-  renderOvAttention(commitments);
+  const open = tasks.filter((t) => t.status === "open");
+  seedWeekRows(open, vis || []);
+  renderOvTiles(open);
+  renderOvAttention(open);
   renderOvSchedule(vis || []);
-  renderOvWorking(commitments);
+  renderOvWorking(open);
   renderOvPhases();
 }
 
@@ -1049,13 +1302,13 @@ async function loadOverview() {
 // once, and only ever added to, so a row you dismissed by not typing in it does
 // not come back mid-week.
 let seededWeekRows = false;
-function seedWeekRows(commitments, visits) {
+function seedWeekRows(openTasks, visits) {
   if (seededWeekRows) return;
   seededWeekRows = true;
 
   const hot = new Set(["overdue", "today", "this_week"]);
-  for (const c of commitments) {
-    if (c.project_id && hot.has(c.bucket)) extraRows.add(String(c.project_id));
+  for (const t of openTasks) {
+    if (t.project_id && hot.has(bucketOf(t))) extraRows.add(String(t.project_id));
   }
   const weekEnd = ymd(addDays(weekStart, 6));
   for (const v of visits) {
@@ -1064,39 +1317,75 @@ function seedWeekRows(commitments, visits) {
   if (extraRows.size) renderWeek();
 }
 
-function renderOvTiles(cs) {
-  const n = (b) => cs.filter((c) => c.bucket === b).length;
-  const tile = (b, cls) =>
-    `<div class="stat ${cls || ""}"><div class="n">${n(b)}</div>
-       <div class="k">${BUCKET_LABEL[b]}</div></div>`;
-  $("ov-tiles").innerHTML =
-    tile("overdue", "fail") + tile("today", "warn") + tile("this_week") +
-    tile("next_week") + tile("later") + tile("vague") + tile("stale");
+// Every tile is a button through to that list. They have always looked like
+// buttons; until now pressing one did nothing, so you could read "13 overdue"
+// and have no way to reach the 13.
+function renderOvTiles(open) {
+  const n = (b) => open.filter((t) => bucketOf(t) === b).length;
+  $("ov-tiles").innerHTML = TODO_BUCKETS.map((b) => `
+    <div class="stat click ${b.cls === "late" ? "fail" : b.cls === "now" ? "warn" : ""}"
+         role="button" tabindex="0" data-ovbucket="${b.key}"
+         title="Open the ${b.label.toLowerCase()} list">
+      <div class="n">${n(b.key)}</div><div class="k">${b.label}</div>
+    </div>`).join("");
+
+  $("ov-tiles").querySelectorAll("[data-ovbucket]").forEach((el) => {
+    const go = () => {
+      todoBucketFilter = el.dataset.ovbucket;
+      $("td-filter-proj").value = "";
+      showTab("todo");
+      renderTodo();
+    };
+    el.addEventListener("click", go);
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); }
+    });
+  });
 }
 
-function ageCell(c) {
-  if (c.days_left == null) return `<td class="age ok">—</td>`;
-  if (c.days_left < 0) return `<td class="age">${Math.abs(c.days_left)}d over</td>`;
-  if (c.days_left === 0) return `<td class="age soon">today</td>`;
-  return `<td class="age ok">${c.days_left}d</td>`;
+// Days from today, computed now rather than read from a column written days ago.
+function daysLeft(task) {
+  if (!task.due_date) return null;
+  return Math.round((parseYmd(task.due_date) - parseYmd(ymd(new Date()))) / 86400000);
 }
 
-function renderOvAttention(cs) {
-  // Overdue first, then today, then this week - the dashboard's own ordering.
+function ageCell(t) {
+  const d = daysLeft(t);
+  if (d == null) return `<td class="age ok">—</td>`;
+  if (d < 0) return `<td class="age">${Math.abs(d)}d over</td>`;
+  if (d === 0) return `<td class="age soon">today</td>`;
+  return `<td class="age ok">${d}d</td>`;
+}
+
+function renderOvAttention(open) {
   const rank = { overdue: 0, today: 1, this_week: 2 };
-  const rows = cs.filter((c) => c.bucket in rank)
-    .sort((a, b) => (rank[a.bucket] - rank[b.bucket]) ||
-                    ((a.days_left ?? 0) - (b.days_left ?? 0)));
+  const rows = open.filter((t) => bucketOf(t) in rank)
+    .sort((a, b) => (rank[bucketOf(a)] - rank[bucketOf(b)]) ||
+                    ((daysLeft(a) ?? 0) - (daysLeft(b) ?? 0)));
   $("ov-att-count").textContent = rows.length ? `— ${rows.length}` : "";
   $("ov-attention-empty").classList.toggle("hidden", rows.length > 0);
-  $("ov-attention").innerHTML = rows.map((c) => `
-    <tr>${ageCell(c)}
-      <td>${c.project_id
-              ? `<b>${escapeHtml(labelFor(c.project_id))}</b><br>`
-              : c.project_no ? `<b>${escapeHtml(c.project_no)}</b><br>` : ""}
-          ${escapeHtml(c.promise)}
-          ${c.due_date ? `<div class="small muted">${escapeHtml(c.due_date)}</div>` : ""}</td>
+  // Whole rows are a way in: tick it off here, or click the project to see
+  // everything outstanding on that job.
+  $("ov-attention").innerHTML = rows.map((t) => `
+    <tr>${ageCell(t)}
+      <td>${t.project_id
+              ? `<b><a data-goproj="${t.project_id}" style="color:var(--teal-lt);cursor:pointer"
+                   >${escapeHtml(labelFor(t.project_id))}</a></b><br>` : ""}
+          <!-- Its own attribute, not the to-do list's: two controls in two
+               panels sharing one selector is a trap for anything that looks
+               them up by attribute. -->
+          <label style="cursor:pointer">
+            <input type="checkbox" data-ovdone="${t.id}" style="margin-right:6px">
+            ${escapeHtml(t.title)}
+          </label>
+          ${t.due_date ? `<div class="small muted">${escapeHtml(t.due_date)}</div>` : ""}</td>
     </tr>`).join("");
+
+  $("ov-attention").querySelectorAll("[data-ovdone]").forEach((c) =>
+    c.addEventListener("change", () => saveTask(c.dataset.ovdone,
+      { status: "done", completed_at: new Date().toISOString() })));
+  $("ov-attention").querySelectorAll("[data-goproj]").forEach((a) =>
+    a.addEventListener("click", () => goToProject(a.dataset.goproj)));
 }
 
 function renderOvSchedule(vs) {
@@ -1110,21 +1399,29 @@ function renderOvSchedule(vs) {
     </tr>`).join("");
 }
 
-function renderOvWorking(cs) {
-  // Grouped by person where the commitment names one, otherwise by project.
+function renderOvWorking(open) {
+  // Grouped by project. Grouping by person is what the dashboard does, but the
+  // per-person split is not in this data and inventing one would be a guess.
   const byProject = {};
-  for (const c of cs.filter((x) => x.bucket === "overdue" || x.bucket === "today")) {
-    const k = c.project_id ? labelFor(c.project_id) : (c.project_no || "Unassigned");
-    (byProject[k] ||= []).push(c.promise);
+  for (const t of open.filter((x) => ["overdue", "today"].includes(bucketOf(x)))) {
+    const k = t.project_id ? labelFor(t.project_id) : "No project";
+    (byProject[k] ||= []).push(t);
   }
-  const blocks = Object.entries(byProject).slice(0, 8);
+  const blocks = Object.entries(byProject)
+    .sort((a, b) => b[1].length - a[1].length).slice(0, 8);
   $("ov-working").innerHTML = blocks.length
     ? blocks.map(([proj, list]) => `
         <div class="who-block">
-          <div class="nm">${escapeHtml(proj)}</div>
-          <ul>${list.slice(0, 3).map((p) => `<li>${escapeHtml(p)}</li>`).join("")}</ul>
+          <div class="nm">${list[0].project_id
+            ? `<a data-goproj="${list[0].project_id}" style="color:var(--teal-lt);cursor:pointer"
+                 >${escapeHtml(proj)}</a>` : escapeHtml(proj)}
+            ${list.length > 3 ? `<span class="muted small"> · ${list.length}</span>` : ""}</div>
+          <ul>${list.slice(0, 3).map((t) => `<li>${escapeHtml(t.title)}</li>`).join("")}</ul>
         </div>`).join("")
     : `<span class="muted small">Nothing pressing.</span>`;
+
+  $("ov-working").querySelectorAll("[data-goproj]").forEach((a) =>
+    a.addEventListener("click", () => goToProject(a.dataset.goproj)));
 }
 
 function renderOvPhases() {

@@ -268,6 +268,42 @@
     background: var(--grey-bg); border-left: 3px solid var(--clay);
   }
 
+  /* A stat tile you can actually press. These were inert divs that looked
+     exactly like buttons — you could read "13 overdue" and not reach the 13. */
+  .stat.click { cursor: pointer; user-select: none; }
+  .stat.click:hover { border-color: var(--teal); }
+  .stat.click:focus-visible { outline: 2px solid var(--teal-lt); outline-offset: 2px; }
+  .stat.click.on { background: var(--grey-bg); border-color: var(--teal); }
+  .stat.click.on .k { color: var(--teal); }
+
+  /* To-do rows. Flat lines, not a table: the task is the content and the rest
+     is small metadata beside it. */
+  .tgroup { margin-top: 18px; }
+  .tgroup > .gh {
+    display: flex; align-items: baseline; gap: 8px;
+    font-size: 10px; text-transform: uppercase; letter-spacing: .12em;
+    color: var(--muted); font-weight: 700;
+    border-bottom: 1px solid var(--line-strong); padding-bottom: 5px;
+  }
+  .tgroup.late > .gh { color: var(--err); border-bottom-color: var(--err); }
+  .tgroup.now > .gh { color: var(--warn); border-bottom-color: var(--warn); }
+  .trow {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 9px 2px; border-bottom: 1px solid var(--line);
+  }
+  .trow:last-child { border-bottom: 0; }
+  .trow > input[type=checkbox] { margin-top: 3px; flex: none; }
+  .trow .body { flex: 1 1 240px; min-width: 0; }
+  .trow .ttitle { line-height: 1.35; }
+  .trow .ttitle.hi { font-weight: 700; }
+  .trow .meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .trow .meta a { color: var(--teal-lt); cursor: pointer; text-decoration: none; }
+  .trow .meta a:hover { text-decoration: underline; }
+  .trow.done .ttitle { text-decoration: line-through; color: var(--muted); font-weight: 400; }
+  .trow .ctl { display: flex; gap: 6px; align-items: center; flex: none; }
+  .trow .ctl input[type=date] { width: 148px; padding: 4px 6px; font-size: 12px; }
+  .trow .ctl select { width: auto; padding: 4px 6px; font-size: 12px; }
+
   /* Day-by-day coverage. One cell per day in the range, so a gap reads at a
      glance — the failure mode of a tracker is missing hours, not wrong ones. */
   .daygrid { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -363,6 +399,10 @@
     main { padding: 10px; }
     .card { padding: 12px; }
     .timer .elapsed { font-size: 26px; }
+    /* The tab strip bleeds to the edges by cancelling main's padding with a
+       negative margin. When that padding drops to 10px the -22px stays, so the
+       strip overhangs 12px each side and the whole page scrolls sideways. */
+    nav.tabs { margin: -10px -10px 16px; padding: 0 10px; }
   }
 </style>
 <script>
@@ -445,6 +485,7 @@
   <main>
     <nav class="tabs" id="tabs">
       <button class="tab active" data-tab="overview">Overview</button>
+      <button class="tab" data-tab="todo">To do <span id="tab-todo-count"></span></button>
       <button class="tab" data-tab="time">Time</button>
       <button class="tab" data-tab="visits">Site visits</button>
       <button class="tab" data-tab="hours">Hours</button>
@@ -479,6 +520,63 @@
       <div class="card">
         <h2>Projects by phase</h2>
         <div id="ov-phasebar" style="padding-top:14px"></div>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------------ to do -->
+    <!-- Buckets are computed from due_date every time this renders, never
+         stored. The dashboard mirror stored them, which is how the Overview
+         came to report 13 overdue when 26 were: a bucket written on Tuesday is
+         only true on Tuesday. -->
+    <section id="panel-todo" class="hidden">
+      <div class="card">
+        <h2>Add a task</h2>
+        <div class="row">
+          <div class="field grow">
+            <label for="td-title">What needs doing</label>
+            <input id="td-title" type="text" placeholder="e.g. send the sealed foundation set to Lowe">
+          </div>
+          <div class="field grow">
+            <label for="td-proj-q">Project <span class="muted">(optional)</span></label>
+            <div class="combo">
+              <input type="hidden" id="td-proj">
+              <input id="td-proj-q" type="text" autocomplete="off" role="combobox"
+                     aria-expanded="false" aria-autocomplete="list"
+                     placeholder="number or address">
+              <div class="combo-list hidden" id="td-proj-list" role="listbox"></div>
+            </div>
+          </div>
+          <div class="field">
+            <label for="td-due">Due <span class="muted">(optional)</span></label>
+            <input id="td-due" type="date">
+          </div>
+          <div class="field">
+            <label for="td-who">Who</label>
+            <select id="td-who"></select>
+          </div>
+          <div class="field">
+            <label for="td-priority">Priority</label>
+            <select id="td-priority">
+              <option value="normal">Normal</option>
+              <option value="high">High</option>
+            </select>
+          </div>
+          <button class="btn" id="td-add">Add</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>
+          To do <span class="muted" id="td-scope"></span>
+          <select id="td-filter-who" style="width:auto;margin-left:8px;padding:4px 8px"></select>
+          <select id="td-filter-proj" style="width:auto;margin-left:8px;padding:4px 8px"></select>
+          <label class="small muted" style="margin-left:10px;font-weight:400;text-transform:none;letter-spacing:0">
+            <input type="checkbox" id="td-show-done"> show finished
+          </label>
+        </h2>
+        <div class="stats" id="td-tiles" style="margin-top:14px"></div>
+        <div id="td-lists" style="margin-top:4px"></div>
+        <div id="td-empty" class="empty">Nothing on the list.</div>
       </div>
     </section>
 
