@@ -28,7 +28,10 @@
     --card: #F8F5F3;
     --line: #D3C7C1;
     --line-strong: #BCAEA7;
-    --muted: #75695F;
+    /* Was #75695F, which is 4.25:1 on the grey table-header band — under AA,
+       and table headers are 10px. Darkened just enough to clear 4.5 on every
+       surface it lands on (card 5.89, grey band 5.10, page 4.57). */
+    --muted: #685D54;
     --err: #A93B2C;
     --err-bg: #F4E3DE;
     --warn: #A9740F;
@@ -37,6 +40,12 @@
     --ok-bg: #E4ECE1;
     --grey-bg: #ECE4E0;
     --band-txt: #A8C4C9;
+    /* The selected tab sits on the card colour, so its text has to flip with
+       the theme. Hardcoding --teal-dk worked on cream and gave 1.07:1 on the
+       dark panel — dark ink on a dark background, effectively invisible.
+       tools\test\contrast.mjs measures this now. */
+    --tab-active-ink: #16424B;
+    --tab-idle-ink: rgba(255,255,255,.86);
     --mono: "Cascadia Mono","Cascadia Code",Consolas,ui-monospace,monospace;
     --sans: "Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;
     --radius: 10px;
@@ -61,6 +70,8 @@
     --ok: #7FB98C;  --ok-bg: #1D2E22;
     --grey-bg: #16262A;
     --band-txt: #A8C4C9;
+    --tab-active-ink: #DCE9EA;
+    --tab-idle-ink: rgba(255,255,255,.82);
     --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 14px rgba(0,0,0,.3);
     --picker-filter: invert(1) brightness(1.6);
     color-scheme: dark;
@@ -344,11 +355,12 @@
   }
   nav.tabs .tab {
     background: transparent; border: 0; border-radius: 0;
-    padding: 11px 18px; color: rgba(255,255,255,.72);
+    padding: 11px 18px; color: var(--tab-idle-ink);
     font-weight: 700; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
   }
   nav.tabs .tab:hover { color: #fff; background: rgba(255,255,255,.08); }
-  nav.tabs .tab.active { background: var(--card); color: var(--teal-dk); }
+  nav.tabs .tab.active { background: var(--card); color: var(--tab-active-ink); }
+  nav.tabs .tab:focus-visible { outline: 2px solid #fff; outline-offset: -3px; }
 
   /* Stat tiles: squared, hairline, with a heavy accent rule across the top. */
   .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 12px; }
