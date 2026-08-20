@@ -14,6 +14,7 @@ let me = null;
 let projects = [];        // pickable projects (active/on_hold, assigned)
 let labelCache = {};      // id -> label, incl. projects that left the picker
 let running = null;       // the live timer entry, if any
+let paused = null;        // a timer banked mid-session, waiting to resume
 let dayDate = ymd(new Date());   // the day the entry panel is showing
 let dayEntries = [];
 let weekStart = startOfWeek(new Date());
@@ -407,27 +408,45 @@ async function ensureLabels(ids) {
 
 // ---------------------------------------------------------------- timer
 
-async function loadRunning() {
-  const { data, error } = await sb
-    .from("time_entries")
-    .select("id, project_id, task_kind, notes, started_at, work_date")
-    .eq("employee_id", me.id)
-    .is("ended_at", null)
-    .not("started_at", "is", null)
-    .maybeSingle();
+const TIMER_COLS = "id, project_id, task_kind, notes, started_at, work_date, accrued_seconds, minutes";
 
-  if (error) return fail("Checking the running timer", error);
-  running = data || null;
+// A paused timer is stored in the finished shape — minutes and ended_at set —
+// with paused_at marking it as resumable. That keeps it legal under
+// time_entries_finished_or_running without relaxing anything, and it means a
+// paused timer that is never resumed is simply a completed entry.
+async function loadRunning() {
+  const [{ data: live, error: e1 }, { data: held, error: e2 }] = await Promise.all([
+    sb.from("time_entries").select(TIMER_COLS)
+      .eq("employee_id", me.id).is("ended_at", null).not("started_at", "is", null).maybeSingle(),
+    sb.from("time_entries").select(TIMER_COLS)
+      .eq("employee_id", me.id).not("paused_at", "is", null).maybeSingle(),
+  ]);
+  if (e1) return fail("Checking the running timer", e1);
+  if (e2) return fail("Checking for a paused timer", e2);
+  running = live || null;
+  paused = held || null;
   renderTimer();
+}
+
+// Milliseconds on the clock face: what was banked before the current pause,
+// plus the segment running now.
+function elapsedMs(entry, live) {
+  const banked = (entry.accrued_seconds || 0) * 1000;
+  return live ? banked + (Date.now() - new Date(entry.started_at).getTime()) : banked;
 }
 
 function renderTimer() {
   const box = $("timer");
   clearInterval(tick);
+  const entry = running || paused;
 
-  if (!running) {
+  $("stop-btn").classList.toggle("hidden", !entry);
+  $("pause-btn").classList.toggle("hidden", !running);
+  $("resume-btn").classList.toggle("hidden", !paused || Boolean(running));
+
+  if (!entry) {
     box.classList.add("idle");
-    $("stop-btn").classList.add("hidden");
+    box.classList.remove("held");
     $("elapsed").textContent = "0:00:00";
     $("timer-what").innerHTML =
       `<div class="proj">Nothing running</div>
@@ -436,18 +455,84 @@ function renderTimer() {
   }
 
   box.classList.remove("idle");
-  $("stop-btn").classList.remove("hidden");
+  box.classList.toggle("held", Boolean(paused && !running));
   $("timer-what").innerHTML =
-    `<div class="proj">${escapeHtml(labelFor(running.project_id))}</div>
-     <div class="sub">${escapeHtml(KIND_LABEL[running.task_kind] || running.task_kind)}${
-       running.notes ? " · " + escapeHtml(running.notes) : ""
-     }</div>`;
+    `<div class="proj">${escapeHtml(labelFor(entry.project_id))}${
+      paused && !running ? ` <span class="tag nb">paused</span>` : ""}</div>
+     <div class="sub">${escapeHtml(KIND_LABEL[entry.task_kind] || entry.task_kind)}${
+       entry.notes ? " · " + escapeHtml(entry.notes) : ""
+     }${paused && !running ? " · resume or stop it" : ""}</div>`;
 
-  const started = new Date(running.started_at);
-  const paint = () => ($("elapsed").textContent = hhmmss(Date.now() - started.getTime()));
+  const paint = () => ($("elapsed").textContent = hhmmss(elapsedMs(entry, Boolean(running))));
   paint();
-  tick = setInterval(paint, 1000);
+  // A paused clock does not move, so there is nothing to tick.
+  if (running) tick = setInterval(paint, 1000);
 }
+
+$("pause-btn").addEventListener("click", async () => {
+  $("pause-btn").disabled = true;
+  try {
+    if (!running) return toast("There is no running timer to pause.", "warn");
+    const now = new Date();
+    const total = (running.accrued_seconds || 0) +
+      Math.floor((now - new Date(running.started_at)) / 1000);
+
+    // Banked in SECONDS. The minutes value has to be set for the row to satisfy
+    // time_entries_finished_or_running, but it is provisional — the real
+    // round-up happens once, on the final stop. Rounding on every pause would
+    // let five pauses invent five minutes.
+    const { data, error } = await sb.from("time_entries")
+      .update({
+        ended_at: now.toISOString(),
+        minutes: Math.max(1, Math.ceil(total / 60)),
+        accrued_seconds: total,
+        paused_at: now.toISOString(),
+      })
+      .eq("id", running.id)
+      .is("ended_at", null)              // a stale tab cannot pause a stopped entry
+      .select("id");
+
+    if (error) return fail("Pausing the timer", error);
+    if (!data || !data.length) {
+      return toast("That timer was already stopped somewhere else.", "warn");
+    }
+    toast(`Paused at ${hhmmss(total * 1000)}.`);
+  } finally {
+    await loadRunning();
+    await Promise.all([loadDay(), loadWeek()]);
+    $("pause-btn").disabled = false;
+  }
+});
+
+$("resume-btn").addEventListener("click", async () => {
+  $("resume-btn").disabled = true;
+  try {
+    if (!paused) return toast("There is no paused timer.", "warn");
+    // Back to the running shape. The unique running index is what stops this
+    // from creating a second live timer, so a failure here is the database
+    // refusing correctly rather than something to work around.
+    const { data, error } = await sb.from("time_entries")
+      .update({
+        started_at: new Date().toISOString(),
+        ended_at: null,
+        minutes: null,
+        paused_at: null,
+      })
+      .eq("id", paused.id)
+      .not("paused_at", "is", null)      // only resume something still paused
+      .select("id");
+
+    if (error) return fail("Resuming the timer", error);
+    if (!data || !data.length) {
+      return toast("That timer is no longer paused — nothing was changed.", "warn");
+    }
+    toast("Resumed.");
+  } finally {
+    await loadRunning();
+    await Promise.all([loadDay(), loadWeek()]);
+    $("resume-btn").disabled = false;
+  }
+});
 
 $("start-btn").addEventListener("click", async () => {
   const projectId = $("proj").value;
@@ -459,6 +544,14 @@ $("start-btn").addEventListener("click", async () => {
     if (running) {
       const stopped = await stopRunning();
       if (!stopped) return;              // finally-block still reconciles the UI
+    }
+    // A paused timer is already saved; starting something else just finalises
+    // it. Leaving paused_at set would strand it against the one-paused index.
+    if (paused) {
+      const { error: e } = await sb.from("time_entries")
+        .update({ paused_at: null }).eq("id", paused.id);
+      if (e) return fail("Closing the paused timer", e);
+      toast("The paused timer was left as recorded.", "warn");
     }
     const { error } = await sb.from("time_entries").insert({
       employee_id: me.id,
@@ -495,6 +588,16 @@ $("stop-btn").addEventListener("click", async () => {
 });
 
 async function stopRunning() {
+  // Stopping a paused timer just settles it: the time is already banked and the
+  // row is already in the finished shape, so only the marker has to go.
+  if (!running && paused) {
+    const { data, error } = await sb.from("time_entries")
+      .update({ paused_at: null }).eq("id", paused.id)
+      .not("paused_at", "is", null).select("id");
+    if (error) { fail("Stopping the timer", error); return false; }
+    paused = null;
+    return Boolean(data && data.length);
+  }
   if (!running) {
     // Never report success for a stop that wrote nothing.
     toast("There was no running timer to stop.", "warn");
@@ -502,14 +605,17 @@ async function stopRunning() {
   }
   const ended = new Date();
   const started = new Date(running.started_at);
-  // Round up, so a 40-second call is a minute rather than nothing.
-  const minutes = Math.max(1, Math.ceil((ended - started) / 60000));
+  // Everything banked across earlier pauses, plus this segment. Round up ONCE,
+  // here, so a 40-second call is a minute rather than nothing — and so a
+  // pause-heavy hour is not inflated a minute at a time.
+  const total = (running.accrued_seconds || 0) + Math.floor((ended - started) / 1000);
+  const minutes = Math.max(1, Math.ceil(total / 60));
 
   // `.is("ended_at", null)` is what stops a stale tab from rewriting an entry
   // that was already closed elsewhere and inflating its minutes.
   const { data, error } = await sb
     .from("time_entries")
-    .update({ ended_at: ended.toISOString(), minutes })
+    .update({ ended_at: ended.toISOString(), minutes, accrued_seconds: total })
     .eq("id", running.id)
     .is("ended_at", null)
     .select("id");

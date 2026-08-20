@@ -222,6 +222,11 @@
   .timer .what .proj { font-weight: 600; }
   .timer .what .sub { font-size: 13px; opacity: .8; }
   .timer.idle { background: var(--card); color: var(--muted); border: 1px dashed var(--line); }
+  /* A paused clock should not look like a running one at a glance. */
+  .timer.held { background: linear-gradient(180deg, var(--muted) 0%, var(--ink) 100%); }
+  .timer.held .elapsed { opacity: .75; }
+  .btn.hold { background: var(--warn); }
+  .btn.hold:hover { filter: brightness(.9); }
 
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); }
@@ -606,6 +611,8 @@
         <div class="elapsed" id="elapsed">0:00:00</div>
         <div class="what" id="timer-what"><div class="proj">Nothing running</div>
           <div class="sub">Pick a project below and start the clock.</div></div>
+        <button class="btn hold hidden" id="pause-btn">Pause</button>
+        <button class="btn hidden" id="resume-btn">Resume</button>
         <button class="btn stop hidden" id="stop-btn">Stop</button>
       </div>
 
