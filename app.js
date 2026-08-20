@@ -679,11 +679,11 @@ function renderDrafts() {
       <td class="num"><input type="number" step="0.25" min="0.25" data-dhours="${d.id}"
             value="${(d.minutes / 60).toFixed(2).replace(/\.?0+$/, "")}"
             style="width:72px;text-align:right"></td>
-      <td><select data-dkind="${d.id}" style="padding:3px 6px;font-size:13px">
+      <td><select data-dkind="${d.id}" style="padding:3px 6px;font-size:13px;min-width:104px">
         ${Object.entries(KIND_LABEL).map(([k, l]) =>
           `<option value="${k}"${k === d.task_kind ? " selected" : ""}>${l}</option>`).join("")}
       </select></td>
-      <td class="small muted">${escapeHtml(d.notes || "")}</td>
+      <td class="small muted" style="max-width:520px">${escapeHtml(d.notes || "")}</td>
       <td class="right" style="white-space:nowrap">
         <button class="btn sm" data-dkeep="${d.id}">Keep</button>
         <button class="btn ghost sm" data-ddrop="${d.id}">Drop</button>
