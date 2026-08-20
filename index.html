@@ -430,6 +430,7 @@
       <button class="tab active" data-tab="overview">Overview</button>
       <button class="tab" data-tab="time">Time</button>
       <button class="tab" data-tab="visits">Site visits</button>
+      <button class="tab" data-tab="hours">Hours</button>
       <button class="tab hidden" data-tab="proposals" id="tab-proposals-btn">Proposals</button>
       <button class="tab hidden" data-tab="people" id="tab-people-btn">People</button>
     </nav>
@@ -638,7 +639,7 @@
           </div>
           <div class="field grow">
             <label for="v-type">Visit type</label>
-            <input id="v-type" type="text" list="visit-types" placeholder="Pre-pour inspection">
+            <input id="v-type" type="text" list="visit-types" placeholder="Pre-pour observation">
             <datalist id="visit-types"></datalist>
           </div>
           <div class="field">
@@ -685,6 +686,152 @@
           </table>
         </div>
         <div id="visits-empty" class="empty">No site visits recorded.</div>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------------ hours -->
+    <!-- Named "Hours against contract", never "Billing" and never "Invoice".
+         HD's design fee is fixed at signature, so hours on a design phase are
+         what the fee cost to earn — not an amount anyone owes. A column that
+         multiplied hours by $175 and rendered it as currency would be read as
+         money due, and no invoice could ever be raised from it. -->
+    <section id="panel-hours" class="hidden">
+      <div class="card">
+        <h2>Hours against contract <span class="muted" id="hrs-scope"></span></h2>
+        <div class="row">
+          <div class="field">
+            <label for="h-from">From</label>
+            <input id="h-from" type="date">
+          </div>
+          <div class="field">
+            <label for="h-to">To</label>
+            <input id="h-to" type="date">
+          </div>
+          <div class="field">
+            <label for="h-range">Quick range</label>
+            <select id="h-range">
+              <option value="mtd">Month to date</option>
+              <option value="last-month">Last month</option>
+              <option value="90">Last 90 days</option>
+              <option value="ytd">Year to date</option>
+              <option value="all">Everything</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="h-kind">Work</label>
+            <select id="h-kind"></select>
+          </div>
+        </div>
+        <div class="stats" id="hrs-stats" style="margin-top:14px"></div>
+        <p class="small muted" style="margin:12px 0 0">
+          <b>Hours are cost, not an amount owed.</b> A design fee is fixed at
+          signature, so hours against a design phase measure what the fee cost to
+          earn. Only RFI responses, submittal review and additional services bill
+          hourly; <b>site visits bill per visit at the contracted rate</b> &mdash;
+          never hourly, never derived from distance. Nothing here has been
+          invoiced, and nothing here creates an invoice: Xero is the system of
+          record, and line-item wording is agreed before an invoice exists.
+        </p>
+      </div>
+
+      <div class="card">
+        <h2>Effort by project</h2>
+        <div class="grid-wrap">
+          <table id="hrs-table">
+            <thead>
+              <tr>
+                <th>Project</th><th>Contract</th>
+                <th class="num">Design</th><th class="num">Review</th>
+                <th class="num">Coord.</th><th class="num">Visit</th>
+                <th class="num">RFI</th><th class="num">Admin</th>
+                <th class="num">Other</th><th class="num">Total</th>
+                <th>Who</th>
+              </tr>
+            </thead>
+            <tbody id="hrs-body"></tbody>
+            <tfoot><tr class="totals" id="hrs-foot"></tr></tfoot>
+          </table>
+        </div>
+        <div id="hrs-empty" class="empty">No hours logged in this range.</div>
+      </div>
+
+      <div class="card">
+        <h2>Additional services <span class="muted">&mdash; the only hours that bill hourly</span></h2>
+        <div class="grid-wrap">
+          <table id="hrs-as-table">
+            <thead>
+              <tr>
+                <th>Date</th><th>Project</th><th>Who</th><th>Work</th>
+                <th class="num">Hours</th>
+                <th>Notes <span class="muted">— the invoice narrative</span></th>
+                <th class="num">Rate</th>
+              </tr>
+            </thead>
+            <tbody id="hrs-as-body"></tbody>
+          </table>
+        </div>
+        <div id="hrs-as-empty" class="empty">
+          Nothing in this range bills hourly.
+        </div>
+        <p class="small muted" style="margin:12px 0 0">
+          &sect;5.3: construction-administration desk work is hourly at the
+          <b>agreement's</b> rate. Where no confirmed signed proposal states one,
+          the rate column stays empty rather than falling back to a default
+          &mdash; several jobs are contracted at $150/hour, and a firm-wide
+          assumption silently overbills every one of them.
+        </p>
+      </div>
+
+      <div class="card admin-hours hidden">
+        <h2>Site visit worksheet <span class="muted">&mdash; admin</span></h2>
+        <div class="grid-wrap">
+          <table id="hrs-visits-table">
+            <thead>
+              <tr>
+                <th>Date</th><th>Project</th><th>What</th><th>Who</th>
+                <th class="num">Contracted</th><th>Basis</th><th>Bills?</th>
+              </tr>
+            </thead>
+            <tbody id="hrs-visits-body"></tbody>
+          </table>
+        </div>
+        <div id="hrs-visits-empty" class="empty">No site visits in this range.</div>
+        <p class="small muted" style="margin:12px 0 0">
+          A visit having happened is not the same as it being billable &mdash; a
+          design-phase look at existing conditions is usually inside the fixed
+          fee. <b>Bills?</b> is yours to set and starts blank on purpose; listing
+          every visit as billable manufactures charges. The contracted rate comes
+          from a signed proposal whose link to this job you have confirmed, and
+          from nowhere else.
+        </p>
+      </div>
+
+      <div class="card admin-hours hidden">
+        <h2>Fee against effort
+          <span class="muted">&mdash; internal cost reference, not for client documents</span></h2>
+        <div class="grid-wrap">
+          <table id="hrs-margin-table">
+            <thead>
+              <tr>
+                <th>Project</th><th>Contract</th><th class="num">Fee</th>
+                <th class="num">Engineer h</th><th class="num">Drafter h</th>
+                <th class="num">Bare cost</th><th class="num">True cost</th>
+                <th class="num">Margin on fee</th>
+              </tr>
+            </thead>
+            <tbody id="hrs-margin-body"></tbody>
+          </table>
+        </div>
+        <div id="hrs-margin-empty" class="empty">
+          Nothing to compare yet &mdash; this needs a project with both a
+          confirmed signed fee and logged hours.
+        </div>
+        <p class="small muted" style="margin:12px 0 0">
+          What makes the <em>next</em> proposal's hour estimate defensible.
+          &sect;5.2 bare cost is engineer&nbsp;hours&times;$175 +
+          drafter&nbsp;hours&times;$90; true internal cost is ~$100 and ~$30.
+          &sect;5.1: the internal figures never appear in a client document.
+        </p>
       </div>
     </section>
 

@@ -159,7 +159,7 @@ async function boot(uid) {
   bootedUid = uid;                       // set first: blocks re-entrant boots
   const { data: emp, error } = await sb
     .from("employees")
-    .select("id, email, full_name, role, active")
+    .select("id, email, full_name, role, active, rate_class")
     .eq("id", uid)                       // admins can read everyone; this view is personal
     .maybeSingle();
 
@@ -199,6 +199,7 @@ async function boot(uid) {
     await loadPeople();
   }
   initVisitForm();   // needs projects, and people if this is an admin
+  initHoursControls();
   renderProjectContext();
   await loadOverview();   // Overview is the landing tab
 }
@@ -888,11 +889,12 @@ document.querySelectorAll("#tabs .tab").forEach((b) =>
 function showTab(name) {
   document.querySelectorAll("#tabs .tab").forEach((b) =>
     b.classList.toggle("active", b.dataset.tab === name));
-  for (const p of ["overview", "time", "visits", "proposals", "people"]) {
+  for (const p of ["overview", "time", "visits", "hours", "proposals", "people"]) {
     $(`panel-${p}`).classList.toggle("hidden", p !== name);
   }
   if (name === "overview") loadOverview();
   if (name === "visits") loadVisits();
+  if (name === "hours") loadHours();
   if (name === "proposals") loadProposals();
 }
 
@@ -1034,6 +1036,305 @@ function renderOvPhases() {
       ).join("")}</div>`;
 }
 
+// --------------------------------------------------------------- hours
+// "Hours against contract", never "Billing". HD prices design work as a fixed
+// fee derived from an hour estimate and settled at signature — so hours logged
+// afterwards are what the fee cost to earn, not an amount anyone owes. The one
+// thing this view must never do is multiply hours by a rate and render it as
+// money due against a design phase.
+//
+// §5.3 draws the line: RFI responses, submittal review and additional services
+// are hourly at the agreement's rate. A site visit is per-visit at the
+// contracted rate regardless of what triggered it, and never $175/hour.
+
+// §5.1 rate card. The internal cost figures are for margin analysis and never
+// appear in a client document.
+const RATE = {
+  engineer: { bill: 175, cost: 100 },
+  drafter: { bill: 90, cost: 30 },
+};
+// The kinds §5.3 allows to bill hourly. Everything else is inside the fee.
+const HOURLY_KINDS = new Set(["rfi", "review", "other"]);
+const DISPOSITION = {
+  "": "— not decided",
+  inside_fee: "Inside the fee",
+  billable: "Bills per visit",
+  not_billable: "Not billable",
+};
+
+let hoursRows = [];        // time_entries in range, confirmed only
+let hoursVisits = [];      // site_visits in range
+let contractOf = {};       // project_id -> the confirmed signed proposal, if any
+let hoursBilling = {};     // visit_id -> {rate, rate_basis, disposition}. Admin only.
+
+function hoursRange() {
+  const from = $("h-from").value;
+  const to = $("h-to").value;
+  return { from: from || "1900-01-01", to: to || "2999-12-31" };
+}
+
+function setQuickRange(which) {
+  const now = new Date();
+  const first = (y, m) => ymd(new Date(y, m, 1));
+  const ranges = {
+    mtd: [first(now.getFullYear(), now.getMonth()), ymd(now)],
+    "last-month": [first(now.getFullYear(), now.getMonth() - 1),
+                   ymd(new Date(now.getFullYear(), now.getMonth(), 0))],
+    90: [ymd(addDays(now, -90)), ymd(now)],
+    ytd: [first(now.getFullYear(), 0), ymd(now)],
+    all: ["", ""],
+  };
+  const [from, to] = ranges[which] || ranges.mtd;
+  $("h-from").value = from;
+  $("h-to").value = to;
+}
+
+async function loadHours() {
+  const { from, to } = hoursRange();
+
+  // RLS gives an employee only their own entries, so a non-admin is looking at
+  // their own hours. Say which, rather than letting a partial view read as a
+  // firm-wide one that has lost rows.
+  $("hrs-scope").textContent = me.role === "admin"
+    ? "· firm-wide" : `· your hours only`;
+  document.querySelectorAll(".admin-hours").forEach((n) =>
+    n.classList.toggle("hidden", me.role !== "admin"));
+
+  const [{ data: te, error: e1 }, { data: sv, error: e2 }] = await Promise.all([
+    sb.from("time_entries")
+      .select("id, employee_id, project_id, work_date, minutes, task_kind, notes, billable, source, confirmed")
+      .eq("confirmed", true)          // a reconstructed guess is not an hour
+      .not("minutes", "is", null)     // a running timer has no hours yet
+      .gte("work_date", from).lte("work_date", to)
+      .order("work_date", { ascending: false }),
+    sb.from("site_visits")
+      .select("id, project_id, visit_date, visit_type, attendee_name, outcome")
+      .gte("visit_date", from).lte("visit_date", to)
+      .order("visit_date", { ascending: false }),
+  ]);
+  if (e1) return fail("Loading hours", e1);
+  if (e2) return fail("Loading visits", e2);
+
+  hoursRows = te || [];
+  hoursVisits = sv || [];
+  await ensureLabels([...hoursRows.map((r) => r.project_id),
+                      ...hoursVisits.map((v) => v.project_id)]);
+
+  // Only a CONFIRMED link to a SIGNED proposal may supply a rate. Everything
+  // else is address-matched guesswork, and billing off it puts a fee on the
+  // wrong job — 1007 Jewell would inherit $150 from a stair addendum.
+  contractOf = {};
+  if (me.role === "admin") {
+    const { data: props } = await sb.from("proposals")
+      .select("id, number, status, design_fee, visit_rate, hourly_rate, project_id, link_confidence")
+      .not("project_id", "is", null);
+    for (const p of props || []) {
+      if (p.status !== "signed" || p.link_confidence !== "confirmed") continue;
+      // Two signed proposals on one job is a question, not an answer.
+      contractOf[p.project_id] = contractOf[p.project_id] === undefined ? p : null;
+    }
+    // Its own copy, not the visits tab's: that one does not read disposition,
+    // so reusing it would render every visit as "not decided".
+    const { data: bill } = await sb.from("site_visit_billing")
+      .select("visit_id, rate, rate_basis, disposition");
+    hoursBilling = {};
+    for (const b of bill || []) hoursBilling[b.visit_id] = b;
+  }
+
+  renderHoursStats();
+  renderHoursByProject();
+  renderAdditionalServices();
+  renderVisitWorksheet();
+  renderMargin();
+}
+
+function rateClassOf(employeeId) {
+  const p = people.find((x) => x.id === employeeId) || (employeeId === me.id ? me : null);
+  return (p && p.rate_class) || "engineer";
+}
+
+function renderHoursStats() {
+  const total = hoursRows.reduce((a, r) => a + r.minutes, 0);
+  const projectCount = new Set(hoursRows.map((r) => r.project_id)).size;
+  const hourly = hoursRows.filter((r) => HOURLY_KINDS.has(r.task_kind))
+                          .reduce((a, r) => a + r.minutes, 0);
+  const nonBillable = hoursRows.filter((r) => !r.billable).reduce((a, r) => a + r.minutes, 0);
+
+  $("hrs-stats").innerHTML = `
+    <div class="stat"><div class="n">${hrs(total) || "0"}</div><div class="k">Hours logged</div></div>
+    <div class="stat"><div class="n">${projectCount}</div><div class="k">Projects</div></div>
+    <div class="stat"><div class="n">${hrs(hourly) || "0"}</div>
+      <div class="k">Could bill hourly</div></div>
+    <div class="stat"><div class="n">${hrs(total - hourly) || "0"}</div>
+      <div class="k">Inside a fixed fee</div></div>
+    <div class="stat"><div class="n">${hoursVisits.length}</div><div class="k">Site visits</div></div>
+    ${nonBillable ? `<div class="stat warn"><div class="n">${hrs(nonBillable)}</div>
+      <div class="k">Marked non-billable</div></div>` : ""}`;
+}
+
+// The contract cell: which proposal governs this job, and how sure we are.
+function contractCell(projectId) {
+  const c = contractOf[projectId];
+  if (c === null) {
+    return `<span class="tag nb" title="More than one confirmed signed proposal on this job">several</span>`;
+  }
+  if (!c) return `<span class="muted small">not confirmed</span>`;
+  return `<span class="mono small">${escapeHtml(c.number)}</span>
+          <span class="tag ok">signed</span>`;
+}
+
+const KIND_ORDER = ["design", "review", "coordination", "site_visit", "rfi", "admin", "other"];
+
+function renderHoursByProject() {
+  const kindFilter = $("h-kind").value;
+  const rows = kindFilter ? hoursRows.filter((r) => r.task_kind === kindFilter) : hoursRows;
+
+  const byProject = {};
+  for (const r of rows) {
+    const b = (byProject[r.project_id] ||= { kinds: {}, total: 0, who: new Set() });
+    b.kinds[r.task_kind] = (b.kinds[r.task_kind] || 0) + r.minutes;
+    b.total += r.minutes;
+    b.who.add(r.employee_id);
+  }
+  const entries = Object.entries(byProject).sort((a, b) => b[1].total - a[1].total);
+
+  $("hrs-empty").classList.toggle("hidden", entries.length > 0);
+  $("hrs-table").classList.toggle("hidden", entries.length === 0);
+  $("hrs-body").innerHTML = entries.map(([pid, b]) => `
+    <tr>
+      <td>${escapeHtml(labelFor(pid))}</td>
+      <td>${contractCell(pid)}</td>
+      ${KIND_ORDER.map((k) => `<td class="num">${hrs(b.kinds[k] || 0)}</td>`).join("")}
+      <td class="num"><strong>${hrs(b.total)}</strong></td>
+      <td class="small muted">${[...b.who].map((id) => {
+        const p = people.find((x) => x.id === id);
+        return escapeHtml(p ? p.full_name.split(" ")[0] : "—");
+      }).join(", ")}</td>
+    </tr>`).join("");
+
+  const foot = KIND_ORDER.map((k) =>
+    rows.filter((r) => r.task_kind === k).reduce((a, r) => a + r.minutes, 0));
+  $("hrs-foot").innerHTML = `<td colspan="2">Total</td>` +
+    foot.map((m) => `<td class="num">${hrs(m)}</td>`).join("") +
+    `<td class="num">${hrs(foot.reduce((a, b) => a + b, 0))}</td><td></td>`;
+}
+
+function renderAdditionalServices() {
+  const rows = hoursRows.filter((r) => HOURLY_KINDS.has(r.task_kind));
+  $("hrs-as-empty").classList.toggle("hidden", rows.length > 0);
+  $("hrs-as-table").classList.toggle("hidden", rows.length === 0);
+
+  $("hrs-as-body").innerHTML = rows.map((r) => {
+    const c = contractOf[r.project_id];
+    // Never fall back to a firm-wide default: several agreements are $150/hour
+    // and a $175 assumption overbills every one of them silently.
+    const rate = c && c.hourly_rate
+      ? `$${c.hourly_rate}`
+      : `<span class="muted small" title="No confirmed signed proposal states one — read the agreement">rate not on file</span>`;
+    const p = people.find((x) => x.id === r.employee_id);
+    return `
+      <tr>
+        <td class="small">${escapeHtml(r.work_date)}</td>
+        <td>${escapeHtml(labelFor(r.project_id))}</td>
+        <td class="small">${escapeHtml(p ? p.full_name : "—")}</td>
+        <td><span class="tag">${escapeHtml(KIND_LABEL[r.task_kind] || r.task_kind)}</span></td>
+        <td class="num">${hrs(r.minutes)}</td>
+        <td class="small">${r.notes ? escapeHtml(r.notes)
+          : `<span class="muted">no note — nothing to put on an invoice line</span>`}</td>
+        <td class="num small">${rate}</td>
+      </tr>`;
+  }).join("");
+}
+
+function renderVisitWorksheet() {
+  if (me.role !== "admin") return;
+  const rows = hoursVisits;
+  $("hrs-visits-empty").classList.toggle("hidden", rows.length > 0);
+  $("hrs-visits-table").classList.toggle("hidden", rows.length === 0);
+
+  $("hrs-visits-body").innerHTML = rows.map((v) => {
+    const b = hoursBilling[v.id] || {};
+    const rate = b.rate != null
+      ? `<strong>$${b.rate}</strong>`
+      : `<span class="muted">—</span>`;
+    return `
+      <tr>
+        <td class="small">${escapeHtml(v.visit_date)}</td>
+        <td>${escapeHtml(labelFor(v.project_id))}</td>
+        <td class="small">${escapeHtml(v.visit_type)}</td>
+        <td class="small">${escapeHtml(v.attendee_name || "")}</td>
+        <td class="num">${rate}</td>
+        <td class="small muted">${escapeHtml(b.rate_basis || "")}</td>
+        <td><select data-disp="${v.id}" style="padding:3px 6px;font-size:13px">
+          ${Object.entries(DISPOSITION).map(([k, l]) =>
+            `<option value="${k}"${k === (b.disposition || "") ? " selected" : ""}>${l}</option>`).join("")}
+        </select></td>
+      </tr>`;
+  }).join("");
+
+  $("hrs-visits-body").querySelectorAll("[data-disp]").forEach((s) =>
+    s.addEventListener("change", () => saveDisposition(s.dataset.disp, s.value)));
+}
+
+async function saveDisposition(visitId, value) {
+  const { data, error } = await sb.from("site_visit_billing")
+    .update({ disposition: value || null })
+    .eq("visit_id", visitId)
+    .select("visit_id");
+  if (error) return fail("Saving that decision", error);
+  if (!data || !data.length) return toast("That did not save — no billing row for this visit.", "warn");
+  hoursBilling[visitId] = { ...(hoursBilling[visitId] || {}), disposition: value || null };
+  toast("Saved.");
+}
+
+function renderMargin() {
+  if (me.role !== "admin") return;
+  const byProject = {};
+  for (const r of hoursRows) {
+    const c = contractOf[r.project_id];
+    if (!c || !c.design_fee) continue;
+    const b = (byProject[r.project_id] ||= { engineer: 0, drafter: 0, contract: c });
+    b[rateClassOf(r.employee_id)] += r.minutes;
+  }
+  const entries = Object.entries(byProject);
+  $("hrs-margin-empty").classList.toggle("hidden", entries.length > 0);
+  $("hrs-margin-table").classList.toggle("hidden", entries.length === 0);
+
+  $("hrs-margin-body").innerHTML = entries.map(([pid, b]) => {
+    const eh = b.engineer / 60;
+    const dh = b.drafter / 60;
+    const bare = eh * RATE.engineer.bill + dh * RATE.drafter.bill;
+    const trueCost = eh * RATE.engineer.cost + dh * RATE.drafter.cost;
+    const fee = Number(b.contract.design_fee);
+    const margin = fee ? ((fee - bare) / fee) * 100 : null;
+    const money = (n) => `$${Math.round(n).toLocaleString()}`;
+    return `
+      <tr>
+        <td>${escapeHtml(labelFor(pid))}</td>
+        <td><span class="mono small">${escapeHtml(b.contract.number)}</span></td>
+        <td class="num">${money(fee)}</td>
+        <td class="num">${eh.toFixed(1)}</td>
+        <td class="num">${dh.toFixed(1)}</td>
+        <td class="num">${money(bare)}</td>
+        <td class="num muted">${money(trueCost)}</td>
+        <td class="num ${margin != null && margin <= 0 ? "" : ""}">${
+          margin == null ? "—"
+            : `<span style="color:var(--${margin <= 0 ? "err" : "ink"})">${margin.toFixed(0)}%</span>`}</td>
+      </tr>`;
+  }).join("");
+}
+
+function initHoursControls() {
+  $("h-kind").innerHTML = `<option value="">All work</option>` +
+    Object.entries(KIND_LABEL).map(([k, l]) => `<option value="${k}">${l}</option>`).join("");
+  setQuickRange("mtd");
+  $("h-range").addEventListener("change", () => { setQuickRange($("h-range").value); loadHours(); });
+  for (const id of ["h-from", "h-to"]) {
+    $(id).addEventListener("change", loadHours);
+  }
+  $("h-kind").addEventListener("change", renderHoursByProject);
+}
+
 // ----------------------------------------------------------- proposals
 
 let proposals = [];
@@ -1115,11 +1416,13 @@ $("prop-search").addEventListener("input", renderProposals);
 let visits = [];
 
 const OUTCOME_LABEL = { pending: "Pending", passed: "Passed", failed: "Failed", na: "n/a" };
+// HD observes; it does not inspect. This list is the vocabulary that ends up in
+// a visit record and, from there, one copy-paste from an invoice description.
 const COMMON_TYPES = [
-  "Pre-pour inspection", "Pre-pour inspection (piers)", "Pre-pour inspection (pool)",
-  "Framing inspection", "Sheathing inspection", "Pier inspection", "Excavation inspection",
-  "Wall removal assessment", "House assessment", "Joist assessment", "Ledger inspection",
-  "Deck framing inspection", "Project walkthrough", "Site visit",
+  "Pre-pour observation", "Pre-pour observation (piers)", "Pre-pour observation (pool)",
+  "Framing observation", "Sheathing observation", "Pier observation", "Excavation observation",
+  "Wall removal assessment", "House assessment", "Joist assessment", "Ledger observation",
+  "Deck framing observation", "Project walkthrough", "Site visit",
 ];
 
 let visitBilling = {};        // visit_id -> {rate, basis}. Admin only.
@@ -1329,7 +1632,7 @@ let assignFor = null;
 async function loadPeople() {
   const { data, error } = await sb
     .from("employees")
-    .select("id, email, full_name, role, active")
+    .select("id, email, full_name, role, active, rate_class")
     .order("full_name");
   if (error) return fail("Loading people", error);
   people = data || [];
