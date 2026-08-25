@@ -423,6 +423,9 @@
   .lt-sys { font-size: 13px; color: var(--muted); margin: 6px 0;
     overflow-wrap: break-word; }
   .lt-sys.err { color: var(--err); }
+  .lt-checks { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 4px 0; }
+  .lt-checks label { display: inline-flex; align-items: center; gap: 6px;
+    font-size: 14px; font-weight: 400; cursor: pointer; }
 
   @media (max-width: 620px) {
     main { padding: 10px; }
@@ -523,6 +526,7 @@
       <button class="tab" data-tab="todo">To do <span id="tab-todo-count"></span></button>
       <button class="tab" data-tab="time">Time</button>
       <button class="tab" data-tab="visits">Site visits</button>
+      <button class="tab hidden" data-tab="letters" id="tab-letters-btn">Letters</button>
       <button class="tab" data-tab="hours">Hours</button>
       <button class="tab hidden" data-tab="proposals" id="tab-proposals-btn">Proposals</button>
       <button class="tab hidden" data-tab="people" id="tab-people-btn">People</button>
@@ -866,16 +870,37 @@
         </div>
         <div id="visits-empty" class="empty">No site visits recorded.</div>
       </div>
+    </section>
 
-      <!-- Letter composer. Admin-only: a letter carries engineering conclusions
-           over Ben's seal, so drafting one is Ben's act. The browser only
-           QUEUES the letter — the firmprint kit, the 009_letters templates and
-           the Dropbox tree all live on the office machine, so rendering happens
-           there (tools/generate-letters.mjs), same split as sync-visits.mjs. -->
-      <div class="card hidden" id="letter-card">
-        <h2>Letter <span class="muted" id="lt-scope"></span></h2>
+    <!-- ---------------------------------------------------------- letters -->
+    <!-- Admin-only (the tab button is revealed by boot): a letter goes out
+         over Ben's seal — and since v2 it renders WITH the stamp. The browser
+         only QUEUES letters; the office machine (tools/generate-letters.mjs,
+         kept alive by the HD Letter Watcher task) renders into
+         009_letters\1 - For Review. -->
+    <section id="panel-letters" class="hidden">
+      <div class="card">
+        <h2>Letters <span class="muted" id="lt-count"></span></h2>
+        <div class="grid-wrap">
+          <table id="letters-table">
+            <thead>
+              <tr>
+                <th>Updated</th><th>Project</th><th>Letter</th><th>Performed by</th>
+                <th>Status</th><th class="num">Pages</th><th>File</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="letters-body"></tbody>
+          </table>
+        </div>
+        <div id="letters-empty" class="empty">
+          No letters yet — use the Letter column in the Site visits log.
+        </div>
+      </div>
+
+      <div class="card" id="letter-card">
+        <h2>Compose <span class="muted" id="lt-scope"></span></h2>
         <div id="lt-closed" class="empty">
-          Pick a visit in the log above — the Letter column — to draft its
+          Pick a visit in the Site visits log — the Letter column — to draft its
           observation letter.
         </div>
         <div id="lt-open" class="hidden">
@@ -885,33 +910,39 @@
               <div id="lt-visit" class="small" style="padding:7px 0"></div>
             </div>
             <div class="field">
-              <label for="lt-type">Letter type</label>
-              <select id="lt-type"></select>
+              <label for="lt-by">Performed by</label>
+              <select id="lt-by"></select>
             </div>
             <div class="field">
               <label>Status</label>
               <div id="lt-status" style="padding:5px 0"></div>
             </div>
           </div>
+          <div class="row" style="margin-top:10px">
+            <div class="field grow">
+              <label>Observed <span class="muted">(check everything this letter covers;
+                none checked = a general letter written from your notes)</span></label>
+              <div id="lt-scopes" class="lt-checks"></div>
+            </div>
+          </div>
           <div id="lt-chat" style="margin-top:10px"></div>
           <div class="row" style="margin-top:10px">
             <div class="field grow">
               <label for="lt-msg">Edits <span class="muted">(chat style — say what the letter should
-                cover or change; blank = the standard letter for this visit)</span></label>
+                cover or change; blank = the standard letter for what's checked)</span></label>
               <textarea id="lt-msg" rows="3"
                 placeholder="e.g. corrections were made on site for the stair-opening blocking; note the added holdowns at grid B"></textarea>
             </div>
             <div class="field" style="justify-content:flex-end">
               <button class="btn" id="lt-go">Go</button>
-              <button class="btn ghost sm hidden" id="lt-issued" style="margin-top:6px">Mark issued</button>
+              <button class="btn ghost sm hidden" id="lt-issued" style="margin-top:6px">Sent</button>
             </div>
           </div>
           <p class="small muted" style="margin:12px 0 0">
-            Go queues the letter; <code>tools/generate-letters.mjs</code> on the office
-            machine renders it through the firmprint kit and writes spec +
-            <code>(DRAFT)</code> PDF into the project's <code>letter\</code> folder.
-            Review it, stamp seal + signature in Bluebeam, and save without the
-            <code>(DRAFT)</code> marker. The browser cannot run the kit on its own.
+            Go queues the letter; the office machine renders it — stamp and signature
+            included — into <code>009_letters\1 - For Review</code>, usually within a
+            minute. Review it, send it, then press <b>Sent</b> here: the file moves
+            itself to <code>2 - Sent</code>.
           </p>
         </div>
       </div>

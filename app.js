@@ -197,7 +197,7 @@ async function boot(uid) {
     $("admin-card").classList.remove("hidden");
     $("tab-people-btn").classList.remove("hidden");
     $("tab-proposals-btn").classList.remove("hidden");
-    $("letter-card").classList.remove("hidden");
+    $("tab-letters-btn").classList.remove("hidden");
     await loadPeople();
   }
   initVisitForm();   // needs projects, and people if this is an admin
@@ -1108,12 +1108,13 @@ document.querySelectorAll("#tabs .tab").forEach((b) =>
 function showTab(name) {
   document.querySelectorAll("#tabs .tab").forEach((b) =>
     b.classList.toggle("active", b.dataset.tab === name));
-  for (const p of ["overview", "todo", "time", "visits", "hours", "proposals", "people"]) {
+  for (const p of ["overview", "todo", "time", "visits", "letters", "hours", "proposals", "people"]) {
     $(`panel-${p}`).classList.toggle("hidden", p !== name);
   }
   if (name === "overview") loadOverview();
   if (name === "todo") loadTasks();
   if (name === "visits") loadVisits();
+  if (name === "letters") loadLettersTab();
   if (name === "hours") loadHours();
   if (name === "proposals") loadProposals();
 }
@@ -2292,7 +2293,12 @@ function renderVisits() {
   body.querySelectorAll("[data-vdel]").forEach((b) =>
     b.addEventListener("click", () => deleteVisit(b.dataset.vdel)));
   body.querySelectorAll("[data-vletter]").forEach((b) =>
-    b.addEventListener("click", () => openLetterComposer(Number(b.dataset.vletter))));
+    b.addEventListener("click", () => {
+      // The composer lives in the Letters tab now; the button here is the
+      // entry point Ben asked to keep under observations.
+      showTab("letters");
+      openLetterComposer(Number(b.dataset.vletter));
+    }));
 }
 
 async function saveVisit(id, patch) {
@@ -2371,33 +2377,42 @@ function initVisitForm() {
 
 // -------------------------------------------------------------- letters
 // The app only QUEUES a letter; tools/generate-letters.mjs on the office
-// machine builds the spec from the 009_letters template for the chosen type,
-// renders it through the firmprint kit, drops the PDF in
-// 009_letters\1 - For Review, and writes status/paths back onto the row.
-// Admin-only end to end (RLS): a letter goes out over Ben's seal.
+// machine (kept alive by the HD Letter Watcher task) builds the spec for the
+// checked observation scopes, renders it through the firmprint kit WITH Ben's
+// stamp and signature, drops it in 009_letters\1 - For Review, and writes
+// status/paths back onto the row. Admin-only end to end (RLS).
 
-// Keys are the runner's template registry. Labels are what Ben picks from.
-const LETTER_TYPES = {
-  foundation: "Foundation observation",
-  framing: "Framing observation",
-  pool: "Pool observation",
-  trenching: "Trenching / pier observation",
-  general: "General letter",
+// The composer's checkboxes — mirror tools/letter-templates.mjs SCOPES.
+// Piers is deliberately separate from trenching/excavations (Ben, 8/24).
+const LETTER_SCOPES = {
+  foundation: "Foundation pre-pour",
+  trenching: "Trenching / excavations",
+  piers: "Piers",
+  pool: "Pool shell",
+  framing: "Framing",
+  sheathing: "Sheathing & nailing",
 };
 
+// DB status 'issued' displays as "sent" — Ben's word for it. The Sent button
+// sets it, and the office machine then moves the file to 2 - Sent itself.
 const LETTER_STATUS_LABEL = {
   queued: "queued", working: "rendering…", draft: "draft ready",
-  error: "error", issued: "issued",
+  error: "error", issued: "sent",
 };
 
-// A prefill from the visit's own wording, never a decision — Ben can change it.
-function guessLetterType(v) {
+// Prepopulation from the visit's own wording — a prefill, never a decision.
+// The specific pre-pour scopes (piers/pool/trenching) win over the generic
+// foundation guess, so "Pre-pour observation (piers)" checks only Piers.
+function guessScopes(v) {
   const t = `${v.visit_type || ""} ${v.notes || ""}`.toLowerCase();
-  if (/trench|excavat|pier|grade beam/.test(t)) return "trenching";
-  if (/pool|gunite|shotcrete/.test(t)) return "pool";
-  if (/framing|sheathing|joist|ledger|deck/.test(t)) return "framing";
-  if (/pour|foundation|slab|rebar|steel/.test(t)) return "foundation";
-  return "general";
+  const s = new Set();
+  if (/trench|excavat|grade beam/.test(t)) s.add("trenching");
+  if (/pier/.test(t)) s.add("piers");
+  if (/pool|gunite|shotcrete/.test(t)) s.add("pool");
+  if (/sheathing|nailing/.test(t)) s.add("sheathing");
+  if (/framing|joist|ledger|deck/.test(t)) s.add("framing");
+  if (!s.size && /pour|foundation|slab|rebar/.test(t)) s.add("foundation");
+  return [...s];
 }
 
 let letters = [];          // admin only; RLS returns nothing for anyone else
@@ -2408,14 +2423,92 @@ async function loadLetters() {
   if (me.role !== "admin") return; // RLS denies it anyway; don't even ask
   const { data, error } = await sb
     .from("letters")
-    .select(`id, project_id, site_visit_id, letter_type, status, messages,
-             spec_path, output_path, pages, error, created_at, updated_at`)
+    .select(`id, project_id, site_visit_id, letter_type, scopes, performed_by,
+             status, messages, spec_path, output_path, pages, error,
+             created_at, updated_at`)
     .order("id", { ascending: true });
   if (error) return fail("Loading letters", error);
   letters = data || [];
   lettersByVisit = {};
   for (const l of letters)
     if (l.site_visit_id != null) lettersByVisit[l.site_visit_id] = l;
+}
+
+// What a letter covers, for the board and the composer.
+function letterScopeLabel(lt) {
+  const s = Array.isArray(lt.scopes) ? lt.scopes : [];
+  if (!s.length) return "General letter";
+  return s.map((k) => LETTER_SCOPES[k] || k).join(" + ");
+}
+
+function loadLettersTab() {
+  if (me.role !== "admin") return;
+  loadLetters().then(() => { renderLetterBoard(); renderLetterStatus(); });
+}
+
+function renderLetterBoard() {
+  const body = $("letters-body");
+  const rows = [...letters].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
+  $("lt-count").textContent = rows.length ? `· ${rows.length} on record` : "";
+  $("letters-empty").classList.toggle("hidden", rows.length > 0);
+  $("letters-table").classList.toggle("hidden", rows.length === 0);
+  body.innerHTML = "";
+  for (const lt of rows) {
+    const file = lt.output_path
+      ? `<span class="small" title="${escapeHtml(lt.output_path)}">${
+          escapeHtml(lt.output_path.split("\\").pop())}</span>`
+      : `<span class="muted">—</span>`;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="small">${escapeHtml(fmtWhen(lt.updated_at))}</td>
+      <td>${escapeHtml(labelFor(lt.project_id))}</td>
+      <td><button class="btn ghost sm" data-ltopen="${lt.site_visit_id ?? ""}">${
+        escapeHtml(letterScopeLabel(lt))}</button></td>
+      <td class="small">${escapeHtml(lt.performed_by || "")}</td>
+      <td>${letterStatusHtml(lt)}</td>
+      <td class="num small">${lt.pages ?? ""}</td>
+      <td>${file}</td>
+      <td class="right"><button class="btn ghost sm" data-ltdel="${lt.id}">Delete</button></td>`;
+    body.appendChild(tr);
+  }
+  body.querySelectorAll("[data-ltopen]").forEach((b) =>
+    b.addEventListener("click", () => {
+      if (b.dataset.ltopen) openLetterComposer(Number(b.dataset.ltopen));
+    }));
+  body.querySelectorAll("[data-ltdel]").forEach((b) =>
+    b.addEventListener("click", () => deleteLetter(Number(b.dataset.ltdel))));
+}
+
+// Deleting removes the RECORD. Files already rendered on the office machine
+// stay on disk — the app cannot and must not delete inside the Dropbox tree.
+async function deleteLetter(id) {
+  const lt = letters.find((x) => x.id === id);
+  if (!lt) return;
+  let msg = `Delete this ${letterScopeLabel(lt).toLowerCase()} letter record (${
+    labelFor(lt.project_id)})? This cannot be undone.`;
+  if (lt.status === "working") {
+    msg += `\n\nIt is rendering RIGHT NOW — the render will finish but nothing will record it.`;
+  }
+  if (lt.status === "issued") {
+    msg += `\n\nIt is marked ISSUED — deleting erases the record that it was sent.`;
+  }
+  if (lt.output_path) {
+    msg += `\n\nThe rendered file stays on disk:\n${lt.output_path}`;
+  }
+  if (!confirm(msg)) return;
+  const { data, error } = await sb.from("letters").delete().eq("id", id).select("id");
+  if (error) return fail("Deleting the letter", error);
+  if (!data || !data.length) return toast("Nothing was deleted.", "warn");
+  await loadLetters();
+  renderLetterBoard();
+  renderVisits();
+  // Close the composer only if it was showing the deleted letter's visit —
+  // a full re-render on an unrelated delete would eat half-made selections.
+  if (letterVisitId === lt.site_visit_id) {
+    letterVisitId = null;
+    renderLetterComposer();
+  }
+  toast("Letter deleted.");
 }
 
 function letterStatusHtml(lt) {
@@ -2443,17 +2536,28 @@ function openLetterComposer(visitId) {
   $("letter-card").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function syncLetterTypeOptions(lt, v) {
-  const sel = $("lt-type");
-  const want = lt ? lt.letter_type : guessLetterType(v);
-  // A row written with a type this build doesn't know must still display
-  // honestly rather than silently snapping to the first option.
-  if (![...sel.options].some((o) => o.value === want)) {
-    const o = document.createElement("option");
-    o.value = want; o.textContent = want;
-    sel.appendChild(o);
-  }
-  sel.value = want;
+// Fill the checkboxes and the Performed-by dropdown. Only the full composer
+// render calls this — background refreshes must never reset a half-made
+// selection.
+function syncComposerInputs(lt, v) {
+  const want = new Set(lt && Array.isArray(lt.scopes) && lt.scopes.length
+    ? lt.scopes : guessScopes(v));
+  // A stored scope this build doesn't know must still display honestly.
+  const keys = [...new Set([...Object.keys(LETTER_SCOPES), ...want])];
+  $("lt-scopes").innerHTML = keys.map((k) => `
+    <label><input type="checkbox" data-ltscope="${escapeHtml(k)}"${
+      want.has(k) ? " checked" : ""}> ${escapeHtml(LETTER_SCOPES[k] || k)}</label>`).join("");
+
+  // Performed by: the roster, plus whatever name the visit or the letter
+  // already carries (historical imports have attendees who are not users).
+  const names = [...new Set([
+    ...people.filter((p) => p.active !== false).map((p) => p.full_name),
+    ...(v.attendee_name ? [v.attendee_name] : []),
+    ...(lt && lt.performed_by ? [lt.performed_by] : []),
+  ])];
+  const value = (lt && lt.performed_by) || v.attendee_name || me.full_name;
+  $("lt-by").innerHTML = names.map((n) =>
+    `<option value="${escapeHtml(n)}"${n === value ? " selected" : ""}>${escapeHtml(n)}</option>`).join("");
 }
 
 // Full render: only on open and after Go. It touches the type select, so it
@@ -2474,7 +2578,7 @@ function renderLetterComposer() {
     `<b>${escapeHtml(labelFor(v.project_id))}</b><br>` +
     `${escapeHtml(v.visit_type)} · ${escapeHtml(v.visit_date)}` +
     (v.attendee_name ? ` · ${escapeHtml(v.attendee_name)}` : "");
-  syncLetterTypeOptions(lt, v);
+  syncComposerInputs(lt, v);
   renderLetterStatus();
 }
 
@@ -2514,14 +2618,20 @@ $("lt-go").addEventListener("click", async () => {
   if (me.role !== "admin" || letterVisitId == null) return;
   const v = visits.find((x) => x.id === letterVisitId);
   if (!v) return toast("That visit is gone — pick another from the log.", "err");
-  const type = $("lt-type").value;
-  if (!type) return toast("Pick a letter type first.", "err");
+  const scopes = [...document.querySelectorAll("#lt-scopes [data-ltscope]:checked")]
+    .map((c) => c.dataset.ltscope);
+  const performedBy = $("lt-by").value;
   const text = $("lt-msg").value.trim();
+  if (!scopes.length && !text) {
+    return toast("Check what was observed, or describe it in the edits box.", "err");
+  }
+  // The board shows this; the runner works from scopes.
+  const type = scopes.length === 0 ? "general" : scopes.length === 1 ? scopes[0] : "multi";
   const lt = lettersByVisit[v.id] || null;
 
   $("lt-go").disabled = true;
   try {
-    let toastMsg = "Letter queued — run generate-letters.mjs on the office machine.";
+    let toastMsg = "Letter queued — the office machine renders it within a minute or two.";
     if (!lt || lt.status === "issued") {
       // First letter for the visit — or a revision of an issued one. Issued
       // is terminal (the record that a sealed letter went out must survive),
@@ -2533,6 +2643,8 @@ $("lt-go").addEventListener("click", async () => {
         project_id: v.project_id,
         site_visit_id: v.id,
         letter_type: type,
+        scopes,
+        performed_by: performedBy || null,
         status: "queued",
         messages,
         requested_by: me.id,
@@ -2546,6 +2658,7 @@ $("lt-go").addEventListener("click", async () => {
       // writebacks are fenced on its claim, so this re-queue wins.
       const { data, error } = await sb.rpc("queue_letter", {
         p_letter_id: lt.id, p_text: text || null, p_letter_type: type,
+        p_scopes: scopes, p_performed_by: performedBy || null,
       });
       if (error) return fail("Re-queuing the letter", error);
       if (!data || !data.length)
@@ -2553,6 +2666,7 @@ $("lt-go").addEventListener("click", async () => {
     }
     $("lt-msg").value = "";
     await loadLetters();
+    renderLetterBoard();
     renderVisits();
     renderLetterStatus();
     toast(toastMsg);
@@ -2567,17 +2681,14 @@ $("lt-issued").addEventListener("click", async () => {
   if (!lt || lt.status !== "draft") return;
   const { data, error } = await sb.from("letters")
     .update({ status: "issued" }).eq("id", lt.id).eq("status", "draft").select("id");
-  if (error) return fail("Marking the letter issued", error);
+  if (error) return fail("Marking the letter sent", error);
   if (!data || !data.length) return toast("That change did not save.", "warn");
   await loadLetters();
+  renderLetterBoard();
   renderVisits();
   renderLetterStatus();
-  toast("Marked issued.");
+  toast("Marked sent — the office machine moves the file to 2 - Sent.");
 });
-
-// The type list is static HTML, so this attaches once, like the filter selects.
-$("lt-type").innerHTML = Object.entries(LETTER_TYPES)
-  .map(([k, l]) => `<option value="${k}">${escapeHtml(l)}</option>`).join("");
 
 // ---------------------------------------------------------------- admin
 
