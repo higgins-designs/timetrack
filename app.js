@@ -1134,6 +1134,7 @@ function showTab(name) {
   if (name === "todo") loadTasks();
   if (name === "visits") loadVisits();
   if (name === "letters") loadLettersTab();
+  else stopLetterPoll(); // leaving the board: no reason to keep polling
   if (name === "hours") loadHours();
   if (name === "proposals") loadProposals();
 }
@@ -3462,7 +3463,40 @@ function letterScopeLabel(lt) {
 
 function loadLettersTab() {
   if (me.role !== "admin") return;
-  loadLetters().then(() => { renderLetterBoard(); renderLetterStatus(); });
+  loadLetters().then(() => { renderLetterBoard(); renderLetterStatus(); syncLetterPoll(); });
+}
+
+// The board is fetch-on-open: nothing here subscribes, so a letter queued
+// while this tab is open reads "queued" forever even after the runner has
+// rendered and stamped it. Poll only while something is actually in flight,
+// and stop the moment nothing is — an idle tab must not talk to the network.
+let letterPollTimer = null;
+const LETTER_POLL_MS = 4000;
+
+function lettersInFlight() {
+  return letters.some((l) => l.status === "queued" || l.status === "working");
+}
+
+function stopLetterPoll() {
+  if (letterPollTimer) { clearInterval(letterPollTimer); letterPollTimer = null; }
+}
+
+function syncLetterPoll() {
+  const onTab = !$("panel-letters").classList.contains("hidden");
+  if (!onTab || me.role !== "admin" || !lettersInFlight()) return stopLetterPoll();
+  if (letterPollTimer) return; // already running
+  letterPollTimer = setInterval(async () => {
+    // Re-check the tab each tick: showTab stops the poll, but a stray timer
+    // must never repaint a hidden panel.
+    if ($("panel-letters").classList.contains("hidden")) return stopLetterPoll();
+    await loadLetters();
+    renderLetterBoard();
+    renderLetterStatus();
+    // The composer mirrors row state, so refresh it while it is open on a
+    // letter that just changed underneath it.
+    if (letterVisitId != null) openLetterComposer(letterVisitId);
+    if (!lettersInFlight()) stopLetterPoll();
+  }, LETTER_POLL_MS);
 }
 
 // Static control: attached once, never inside a render.
@@ -3749,6 +3783,9 @@ $("lt-go").addEventListener("click", async () => {
     renderLetterBoard();
     renderVisits();
     renderLetterStatus();
+    // Queueing is the moment something goes in flight — start watching now so
+    // the board flips to draft on its own instead of sitting on "queued".
+    syncLetterPoll();
     toast(toastMsg);
   } finally {
     $("lt-go").disabled = false;
