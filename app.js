@@ -2686,8 +2686,8 @@ function renderLetterStatus() {
       escapeHtml(fmtWhen(m.at))}</div>${escapeHtml(m.text || "")}</div>`;
   }
   if (!lt) {
-    h += `<div class="lt-sys">Nothing queued yet — Go queues the standard letter
-      for this visit; the edits box is optional.</div>`;
+    h += `<div class="lt-sys">Nothing queued yet — Queue Letter builds the letter from
+      the checked standard content; the notes box is optional.</div>`;
   } else {
     if (lt.status === "queued")
       h += `<div class="lt-sys">Queued — waiting for generate-letters.mjs on the office machine.</div>`;
