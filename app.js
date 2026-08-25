@@ -2387,19 +2387,73 @@ function initVisitForm() {
 // family carries all three variations of the old letter menu (Ben, 8/24).
 // Each scope's items are the sub-checkboxes whose checked subset the letter's
 // sentence enumerates.
+// `core` is pre-checked when a category is selected; the rest of the library
+// sits unchecked — a letter must never silently attest to something nobody
+// looked at (welds, vapor retarder, ...). Mirror of tools/letter-templates.mjs.
 const LETTER_SCOPES = {
-  foundation: { label: "Foundation pre-pour", items: ["rebar mat placement",
-    "beam widths and depths", "slab thickness", "reinforcement", "rebar location"] },
-  trenching: { label: "Trenching / excavations", items: ["grade beam widths",
-    "grade beam depths", "bearing conditions"] },
-  piers: { label: "Piers", items: ["pier depths", "pier diameters", "pier reinforcement"] },
-  pool: { label: "Pool shell", items: ["rebar mat placement", "beam width and depth",
-    "shell thickness", "pier depth and reinforcement", "rebar location"] },
-  framing: { label: "Wood framing", items: ["wall framing", "floor framing",
-    "roof framing", "headers and beams", "blocking and connections"] },
-  steel: { label: "Steel framing", items: ["steel framing members", "connections and bolting"] },
-  sheathing: { label: "Sheathing & nailing", items: ["wall sheathing", "roof sheathing",
-    "nailing size and spacing"] },
+  foundation: { label: "Foundation pre-pour",
+    core: ["rebar mat placement", "reinforcing bar size and spacing",
+      "beam widths and depths", "slab thickness", "reinforcing steel location and cover"],
+    items: ["rebar mat placement", "reinforcing bar size and spacing",
+      "beam widths and depths", "slab thickness", "beam reinforcement",
+      "slab reinforcement", "reinforcing steel location and cover",
+      "laps and development", "anchor bolts and embeds", "void boxes",
+      "vapor retarder", "plumbing penetrations and blockouts"] },
+  trenching: { label: "Trenching / excavations",
+    core: ["grade beam widths", "grade beam depths", "bearing conditions"],
+    items: ["grade beam widths", "grade beam depths", "bearing conditions"] },
+  piers: { label: "Piers",
+    core: ["pier depths", "pier diameters", "pier reinforcement"],
+    items: ["pier depths", "pier diameters", "pier reinforcement",
+      "pier locations", "bearing conditions", "reinforcing cage placement",
+      "pier cap reinforcement", "embedment into bearing material"] },
+  pool: { label: "Pool shell",
+    core: ["rebar mat placement", "reinforcing bar size and spacing",
+      "shell thickness", "beam width and depth", "rebar cover"],
+    items: ["rebar mat placement", "reinforcing bar size and spacing",
+      "shell thickness", "beam width and depth", "wall reinforcement",
+      "floor reinforcement", "bond beam reinforcement", "double-mat spacing",
+      "steps and benches", "reinforcing around penetrations",
+      "skimmer box reinforcement", "rebar cover", "pier depth and reinforcement"] },
+  framing: { label: "Wood framing",
+    core: ["wall framing", "floor joists and floor framing",
+      "roof rafters and roof framing", "headers and beams", "blocking"],
+    items: ["wall framing", "floor joists and floor framing",
+      "roof rafters and roof framing", "ceiling framing", "headers and beams",
+      "posts and columns", "bearing conditions", "blocking",
+      "joist and beam hangers", "straps and ties", "holdowns", "anchor bolts",
+      "framing around openings", "field modifications, notches and holes"] },
+  steel: { label: "Steel framing",
+    core: ["structural steel members", "member sizes and locations",
+      "bolted connections", "base plates", "anchor rods"],
+    items: ["structural steel members", "member sizes and locations",
+      "welded connections", "bolted connections", "base plates", "anchor rods",
+      "beam bearing", "steel-to-wood connections", "steel-to-concrete connections",
+      "bracing", "metal deck", "deck attachment", "field modifications"] },
+  sheathing: { label: "Sheathing / lateral framing",
+    core: ["wall sheathing", "roof sheathing", "nailing size and spacing"],
+    items: ["wall sheathing", "roof sheathing", "floor sheathing",
+      "nailing size and spacing", "panel edge blocking", "shear wall nailing",
+      "diaphragm nailing", "holdowns", "straps and collectors",
+      "lateral load-path connections"] },
+  masonry: { label: "Masonry",
+    core: ["wall reinforcement", "grout placement", "bond beams", "lintels"],
+    items: ["wall reinforcement", "grout placement", "bond beams", "lintels",
+      "foundation dowels", "wall anchors", "wall-to-roof connections"] },
+  retaining: { label: "Retaining walls",
+    core: ["footing dimensions", "footing reinforcement", "stem reinforcement",
+      "wall thickness"],
+    items: ["footing dimensions", "footing reinforcement", "stem reinforcement",
+      "wall thickness", "dowels", "drainage provisions", "waterproofing", "backfill"] },
+  repairs: { label: "Post-installed anchors / repairs",
+    core: ["epoxy anchors", "mechanical anchors", "dowels"],
+    items: ["epoxy anchors", "mechanical anchors", "dowels", "added framing",
+      "sistered members", "repair plates", "field welds", "corrective work"] },
+  existing: { label: "Existing conditions",
+    core: ["existing framing", "existing foundation", "cracking", "movement"],
+    items: ["existing framing", "existing foundation", "cracking", "movement",
+      "deterioration", "field measurements", "concealed conditions",
+      "previous modifications"] },
 };
 
 // DB status 'issued' displays as "sent" — Ben's word for it. The Sent button
@@ -2418,9 +2472,13 @@ function guessScopes(v) {
   if (/trench|excavat|grade beam/.test(t)) s.add("trenching");
   if (/pier/.test(t)) s.add("piers");
   if (/pool|gunite|shotcrete/.test(t)) s.add("pool");
-  if (/sheathing|nailing/.test(t)) s.add("sheathing");
+  if (/sheathing|nailing|shear wall/.test(t)) s.add("sheathing");
   if (/steel/.test(t)) s.add("steel");
   else if (/framing|joist|ledger|deck/.test(t)) s.add("framing");
+  if (/masonry|cmu|block wall/.test(t)) s.add("masonry");
+  if (/retaining/.test(t)) s.add("retaining");
+  if (/repair|epoxy|anchor|sister/.test(t)) s.add("repairs");
+  if (/existing|assessment|evaluation|walkthrough/.test(t)) s.add("existing");
   if (!s.size && /pour|foundation|slab|rebar/.test(t)) s.add("foundation");
   return [...s];
 }
@@ -2556,10 +2614,11 @@ function syncComposerInputs(lt, v) {
   const keys = [...new Set([...Object.keys(LETTER_SCOPES), ...want])];
   const stored = (lt && lt.scope_items && typeof lt.scope_items === "object") ? lt.scope_items : {};
   $("lt-scopes").innerHTML = keys.map((k) => {
-    const cfg = LETTER_SCOPES[k] || { label: k, items: [] };
+    const cfg = LETTER_SCOPES[k] || { label: k, items: [], core: [] };
     const on = want.has(k);
-    // Items default to ALL checked; a stored subset restores exactly.
-    const picked = new Set(Array.isArray(stored[k]) && stored[k].length ? stored[k] : cfg.items);
+    // Core items default checked; extended library items must be chosen on
+    // purpose. A stored subset restores exactly.
+    const picked = new Set(Array.isArray(stored[k]) && stored[k].length ? stored[k] : cfg.core);
     return `
     <div>
       <label><input type="checkbox" data-ltscope="${escapeHtml(k)}"${
@@ -2665,7 +2724,7 @@ $("lt-go").addEventListener("click", async () => {
     if (!picked.length) {
       return toast(`Check at least one item under ${cfg.label}, or uncheck it.`, "err");
     }
-    if (picked.length < cfg.items.length) scopeItems[k] = picked;
+    scopeItems[k] = picked; // always explicit — the letter says exactly this
   }
   // The board shows this; the runner works from scopes.
   const type = scopes.length === 0 ? "general" : scopes.length === 1 ? scopes[0] : "multi";
