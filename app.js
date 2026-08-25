@@ -2059,6 +2059,11 @@ function initHoursControls() {
 
 // ----------------------------------------------------------- proposals
 
+// Registry enums are storage values; the page shows English.
+const PROPOSAL_STATUS_LABEL = {
+  for_review: "For review", sent: "Sent", signed: "Signed", archive: "Archive",
+};
+
 let proposals = [];
 
 async function loadProposals() {
@@ -2122,7 +2127,7 @@ function renderProposals() {
       <td>${escapeHtml(p.title || "")}</td>
       <td class="small">${escapeHtml(p.client_name || "")}</td>
       <td><span class="tag ${p.status === "signed" ? "ok" : p.status === "for_review" ? "nb" : ""}"
-            >${escapeHtml(p.status)}</span></td>
+            >${escapeHtml(PROPOSAL_STATUS_LABEL[p.status] || p.status)}</span></td>
       <td class="num">${p.design_fee ? "$" + Number(p.design_fee).toLocaleString() : ""}</td>
       <td class="num">${p.visit_rate ? "$" + p.visit_rate : ""}</td>
       <td class="small">${link}</td>`;
@@ -2139,7 +2144,8 @@ let visits = [];
 
 // Stored values stay pending/passed/failed/na (a CHECK constraint), but the
 // wording does not: "Passed" and "Failed" imply a certification an
-// observation visit does not carry.
+// observation visit does not carry. This applies to the STAT TILES too —
+// they said Passed/Failed for a month under this very comment.
 const OUTCOME_LABEL = {
   pending: "Not yet reported", passed: "No corrections noted",
   failed: "Corrections required", na: "Informational / n/a",
@@ -2228,8 +2234,8 @@ function renderVisitStats() {
     <div class="stat"><div class="n">${projectCount}</div><div class="k">Projects</div></div>
     <div class="stat"><div class="n">${thisMonth}</div><div class="k">This month</div></div>
     <div class="stat"><div class="n">${upcoming}</div><div class="k">Today or later</div></div>
-    <div class="stat pass"><div class="n">${passed}</div><div class="k">Passed</div></div>
-    <div class="stat fail"><div class="n">${failed}</div><div class="k">Failed</div></div>
+    <div class="stat pass"><div class="n">${passed}</div><div class="k">No corrections</div></div>
+    <div class="stat fail"><div class="n">${failed}</div><div class="k">Corrections noted</div></div>
     ${unbooked ? `<div class="stat"><div class="n">${unbooked}</div>
         <div class="k">Not on calendar</div></div>` : ""}`;
 }
