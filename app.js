@@ -3491,10 +3491,12 @@ function syncLetterPoll() {
     if ($("panel-letters").classList.contains("hidden")) return stopLetterPoll();
     await loadLetters();
     renderLetterBoard();
+    // renderLetterStatus ONLY — it is the documented safe partial refresh.
+    // Never call renderLetterComposer/openLetterComposer from here: they
+    // rebuild the scope checkboxes and scroll the card into view, so on a
+    // timer they would eat half-made selections every tick (see the week-grid
+    // postmortem in the README).
     renderLetterStatus();
-    // The composer mirrors row state, so refresh it while it is open on a
-    // letter that just changed underneath it.
-    if (letterVisitId != null) openLetterComposer(letterVisitId);
     if (!lettersInFlight()) stopLetterPoll();
   }, LETTER_POLL_MS);
 }
@@ -3704,6 +3706,16 @@ function renderLetterStatus() {
       h += `<div class="lt-sys">Queued — waiting for generate-letters.mjs on the office machine.</div>`;
     if (lt.status === "working")
       h += `<div class="lt-sys">The office machine is rendering this letter…</div>`;
+    // A finished draft is revisable, but nothing said so: the composer showed
+    // a PDF path and a Sent button and left the only way to change the letter
+    // undiscoverable. queue_letter() re-queues anything that is not issued.
+    if (lt.status === "draft")
+      h += `<div class="lt-sys"><b>Draft ready — read the PDF before sending.</b><br>
+        <b>To change it:</b> describe what should differ in the notes box below and press
+        <b>Queue changes</b>. It regenerates and replaces this PDF, and your note is kept
+        on the letter.<br>
+        <b>Sent</b> is final — press it only once the letter has actually gone out. After
+        that a revision becomes a new letter rather than a change to this one.</div>`;
     if (lt.error)
       h += `<div class="lt-sys err">${escapeHtml(lt.error)}</div>`;
     if (lt.output_path)
@@ -3711,6 +3723,14 @@ function renderLetterStatus() {
         lt.pages ? ` · ${lt.pages} page${lt.pages === 1 ? "" : "s"}` : ""}</div>`;
   }
   $("lt-chat").innerHTML = h;
+
+  // "Queue Letter" on a finished draft reads like it would make a SECOND
+  // letter, which is why revising one looked impossible. Say what it does.
+  // Safe here: this touches a button label, never a text input or a select.
+  $("lt-go").textContent =
+    lt && lt.status !== "issued" && lt.status !== "queued" && lt.status !== "working"
+      ? "Queue changes"
+      : "Queue Letter";
 }
 
 $("lt-go").addEventListener("click", async () => {
