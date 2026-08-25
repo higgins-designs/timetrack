@@ -3467,7 +3467,12 @@ function letterScopeLabel(lt) {
 
 function loadLettersTab() {
   if (me.role !== "admin") return;
-  loadLetters().then(() => { renderLetterBoard(); renderLetterStatus(); syncLetterPoll(); });
+  // The composer resolves its visit out of `visits`, which was only ever
+  // filled by the Site visits tab. Landing here first and opening a letter
+  // therefore found an empty array, closed the composer and made the button
+  // look dead. loadVisits() also loads letters for an admin, so one call
+  // covers this board and the composer both.
+  loadVisits().then(() => { renderLetterBoard(); renderLetterStatus(); syncLetterPoll(); });
 }
 
 // The board is fetch-on-open: nothing here subscribes, so a letter queued
@@ -3630,7 +3635,17 @@ function fmtWhen(iso) {
     { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
-function openLetterComposer(visitId) {
+async function openLetterComposer(visitId) {
+  // Never fail silently. renderLetterComposer resolves the visit out of
+  // `visits` and closes itself when it cannot find one, so a click on a
+  // letter whose visit is not loaded looked like a dead button. Fetch and
+  // retry once; if it still is not there, say so rather than do nothing.
+  if (!visits.some((x) => x.id === visitId)) {
+    await loadVisits();
+    if (!visits.some((x) => x.id === visitId)) {
+      return toast("That letter's site visit could not be loaded, so the composer cannot open on it.", "err");
+    }
+  }
   // Switching visits clears the edits box: half-typed instructions for one
   // letter must never ride along and get appended to a different one. Same
   // visit keeps the draft text (background refreshes never touch it).
