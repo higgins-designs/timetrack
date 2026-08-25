@@ -430,7 +430,102 @@
     margin: 2px 0 4px 24px; }
   .lt-items label { font-size: 13px; color: var(--muted); }
 
+  /* A project label that is a way in. Every table renders its project through
+     projLink(), so the number on screen is the door to the project drawer. */
+  .plink { color: var(--teal-lt); cursor: pointer; text-decoration: none; }
+  .plink:hover { text-decoration: underline; }
+  .plink:focus-visible { outline: 2px solid var(--teal-lt); outline-offset: 1px; }
+
+  /* Global project search, in the masthead. Not a form field: it opens the
+     drawer rather than filling anything in, so it is styled for the dark band
+     instead of inheriting the paper-coloured input rule. */
+  header.app .hdr-search { flex: 0 1 250px; min-width: 170px; }
+  #gs-wrap { position: relative; }
+  #gs-q {
+    background: rgba(255,255,255,.10); color: #fff;
+    border: 1px solid rgba(255,255,255,.35); border-radius: 0;
+    padding: 5px 8px; font-size: 13px; width: 100%;
+  }
+  #gs-q::placeholder { color: var(--band-txt, #A8C4C9); opacity: 1; }
+  #gs-q:focus { outline: 2px solid #fff; outline-offset: -1px; }
+  /* Wider than the field so a full address is readable, and pinned to its
+     right edge so it cannot push the page sideways. */
+  #gs-list { left: auto; right: 0; width: max(100%, 300px); max-width: 92vw; }
+  #gs-list .opt .cl { color: var(--muted); font-size: 12px; }
+  #gs-list .opt.on .cl { color: rgba(255,255,255,.85); }
+
+  /* Project drawer. A slide-over, not a tab: the modules are joined by the
+     project number, and this is the one place that gathers a job — tasks,
+     time, visits, letters, proposal. Square and hairline like every card. */
+  #pd-scrim { position: fixed; inset: 0; z-index: 70; background: rgba(43,51,53,.45); }
+  html.dark #pd-scrim { background: rgba(0,0,0,.6); }
+  #proj-drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; z-index: 71;
+    width: min(560px, 100vw); display: flex; flex-direction: column;
+    background: var(--card); border-left: 1px solid var(--line-strong);
+    box-shadow: var(--shadow);
+  }
+  #proj-drawer .pd-head {
+    background: var(--teal-dk); color: #fff; padding: 12px 14px 11px;
+    border-bottom: 3px solid var(--clay);
+    display: flex; align-items: flex-start; gap: 10px; flex: none;
+  }
+  #proj-drawer .pd-head .k {
+    font-size: 10px; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--band-txt, #A8C4C9); margin-bottom: 3px;
+  }
+  #proj-drawer .pd-head h2 { font-size: 17px; overflow-wrap: anywhere; }
+  #pd-sub { font-size: 12px; color: var(--band-txt, #A8C4C9); margin-top: 5px; }
+  #pd-sub .tag { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.4); color: #fff; }
+  #pd-close {
+    margin-left: auto; flex: none; width: 30px; height: 30px; padding: 0;
+    background: transparent; color: #fff; border: 1px solid rgba(255,255,255,.35);
+    border-radius: 0; font-size: 17px; line-height: 1;
+  }
+  #pd-close:hover { background: rgba(255,255,255,.14); }
+  #pd-body { flex: 1; overflow-y: auto; padding: 14px; }
+  .pd-facts {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(102px, 1fr));
+    gap: 8px; margin-bottom: 16px;
+  }
+  .pd-fact {
+    border: 1px solid var(--line); border-top: 3px solid var(--line-strong);
+    padding: 8px 10px; background: var(--card);
+  }
+  .pd-fact .n { font-family: var(--mono); font-size: 17px; font-weight: 700; line-height: 1.15; }
+  .pd-fact .k {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .12em;
+    color: var(--muted); margin-top: 3px;
+  }
+  .pd-next { border-left: 3px solid var(--clay); background: var(--grey-bg);
+    padding: 8px 10px; margin-bottom: 14px; font-size: 13px; }
+  .pd-sec { margin-bottom: 18px; }
+  .pd-sec > .gh {
+    display: flex; align-items: baseline; gap: 8px;
+    font-size: 10px; text-transform: uppercase; letter-spacing: .12em;
+    color: var(--muted); font-weight: 700;
+    border-bottom: 1px solid var(--line-strong); padding-bottom: 5px;
+  }
+  .pd-sec table { width: 100%; }
+  .pd-sec td {
+    padding: 6px 0; font-size: 13px; border-bottom: 1px solid var(--line);
+    vertical-align: top; overflow-wrap: anywhere;
+  }
+  .pd-sec td.num { padding-left: 8px; white-space: nowrap; }
+  .pd-sec td.when { white-space: nowrap; width: 78px; color: var(--muted); font-family: var(--mono); font-size: 12px; }
+  .pd-sec td.when.late { color: var(--err); font-weight: 700; }
+  .pd-none, .pd-more { font-size: 13px; color: var(--muted); padding: 8px 0 0; }
+  .pd-foot { font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 10px; }
+  .pd-foot .path { font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; }
+
   @media (max-width: 620px) {
+    /* Full-width sheet on a phone, and the search drops to its own compact
+       line rather than squeezing the identity blocks. */
+    #proj-drawer { width: 100vw; border-left: 0; }
+    header.app .hdr-search { flex: 1 1 100%; padding: 10px 0 0; border-left: 0; }
+    header.app .hdr-search .k { display: none; }
+    #gs-list { width: 100%; max-width: none; }
+
     main { padding: 10px; }
     .card { padding: 12px; }
     .timer .elapsed { font-size: 26px; }
@@ -518,6 +613,19 @@
       <div class="k">Signed in</div>
       <div class="v" id="who"></div>
     </div>
+    <!-- Global project search. The project number is the join key on every tab,
+         so this is the way in that did not exist: number, address or client,
+         then the drawer. It never takes focus on load. -->
+    <div class="meta hdr-search">
+      <div class="k"><label for="gs-q">Find a project</label></div>
+      <div class="combo" id="gs-wrap">
+        <input id="gs-q" type="search" autocomplete="off" role="combobox"
+               aria-expanded="false" aria-autocomplete="list" aria-controls="gs-list"
+               placeholder="number, address or client">
+        <div class="combo-list hidden" id="gs-list" role="listbox"
+             aria-label="Project search results"></div>
+      </div>
+    </div>
     <div class="meta" style="border-left:0">
       <button id="signout">Sign out</button>
     </div>
@@ -530,7 +638,10 @@
       <button class="tab" data-tab="time">Time</button>
       <button class="tab" data-tab="visits">Site visits</button>
       <button class="tab hidden" data-tab="letters" id="tab-letters-btn">Letters</button>
-      <button class="tab" data-tab="hours">Hours</button>
+      <!-- "Hours & Fees", not "Hours": TIME vs HOURS was ambiguous to anyone
+           new. The data-tab key stays "hours" — it is what showTab, the panel
+           id and every test address. -->
+      <button class="tab" data-tab="hours">Hours &amp; Fees</button>
       <button class="tab hidden" data-tab="proposals" id="tab-proposals-btn">Proposals</button>
       <button class="tab hidden" data-tab="people" id="tab-people-btn">People</button>
     </nav>
@@ -1232,6 +1343,30 @@
     </div>
     </section>
   </main>
+
+  <!-- ----------------------------------------------------- project drawer -->
+  <!-- Inside #app on purpose: #app is hidden until sign-in, so the drawer can
+       never appear over the login screen. It is a slide-over rather than a tab,
+       so showTab's panel array is untouched. Sections that read admin-only
+       tables (letters, proposals) are omitted entirely for everyone else —
+       an empty section would read as "this job has no proposal", which is a
+       different claim from "you cannot see proposals". -->
+  <div id="pd-scrim" class="hidden"></div>
+  <aside id="proj-drawer" class="hidden" role="dialog" aria-modal="true"
+         aria-labelledby="pd-title">
+    <div class="pd-head">
+      <div style="min-width:0">
+        <div class="k">Project</div>
+        <h2 id="pd-title"></h2>
+        <div id="pd-sub"></div>
+      </div>
+      <button id="pd-close" title="Close (Esc)" aria-label="Close">&times;</button>
+    </div>
+    <div id="pd-body">
+      <div class="pd-facts" id="pd-facts"></div>
+      <div id="pd-sections"></div>
+    </div>
+  </aside>
 </div>
 
 <div id="toast"></div>

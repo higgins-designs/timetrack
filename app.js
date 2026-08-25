@@ -68,6 +68,19 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+// A project label that is also the way into it: one delegated listener (see
+// "project drawer") opens the drawer on any of these, so a table that renders
+// its project through this needs no re-wiring after a render.
+//
+// The attribute is data-projlink and NOT data-proj: the week grid's hour cells
+// already carry data-proj, and a delegated listener on that name would open a
+// drawer every time someone clicked a cell to type into it.
+function projLink(projectId, text) {
+  if (projectId == null || projectId === "") return "";
+  const label = text == null ? labelFor(projectId) : text;
+  return `<a class="plink" role="button" tabindex="0" title="Open this project"` +
+    ` data-projlink="${escapeHtml(String(projectId))}">${escapeHtml(label)}</a>`;
+}
 const KIND_LABEL = {
   design: "Design", review: "Review", coordination: "Coordination",
   site_visit: "Site visit", rfi: "RFI", admin: "Admin", other: "Other",
@@ -1119,6 +1132,382 @@ function showTab(name) {
   if (name === "proposals") loadProposals();
 }
 
+// ------------------------------------------------------- project drawer
+// The modules were only ever joined by the project number, and there was no
+// project view: you could read "26016 — 3811 Grayson Ln" on five tabs and not
+// reach the job behind it. This is that view — a slide-over, not a tab, so
+// showTab's panel array and every existing test address the same panels.
+//
+// Everything below is a plain query, so RLS is the gate: an employee gets only
+// their own time entries, and the two ADMIN-ONLY TABLES (letters, proposals)
+// are not queried at all for anyone else — their sections are omitted rather
+// than rendered empty, because an empty "Letters" heading claims this job has
+// no letters when the truth is that you cannot see letters.
+
+const PD_ROWS = 8;          // rows per section before the "N more" line
+// The hours figure is summed from the rows read here rather than from a
+// server-side aggregate. A project past this many confirmed entries would
+// under-report, so the total is marked with a + instead of quietly lying.
+const PD_TIME_CAP = 500;
+
+let pdToken = 0;            // a later open (or a close) makes an earlier load stale
+let pdReturnFocus = null;
+
+// Local dates only — parseYmd, never new Date("2026-08-24") which is UTC.
+function pdShortDate(s) {
+  if (!s) return "";
+  const d = parseYmd(s);
+  const opts = d.getFullYear() === new Date().getFullYear()
+    ? { month: "short", day: "numeric" }
+    : { year: "2-digit", month: "short", day: "numeric" };
+  return d.toLocaleDateString(undefined, opts);
+}
+function pdStampDate(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+// `people` is loaded for admins only, so for anyone else this reads "—" rather
+// than inventing a name for a person they cannot look up.
+function pdWho(id) {
+  if (!id) return "—";
+  const person = people.find((x) => x.id === id) || (id === me.id ? me : null);
+  return person ? person.full_name.split(" ")[0] : "—";
+}
+
+async function openProjectDrawer(projectId) {
+  const id = String(projectId == null ? "" : projectId).trim();
+  if (!id || !me) return;
+  const token = ++pdToken;
+  const drawer = $("proj-drawer");
+  // Only remember where focus came from on a genuine open; clicking a project
+  // inside the drawer must not make the drawer's own link the return target.
+  if (drawer.classList.contains("hidden")) pdReturnFocus = document.activeElement;
+  $("pd-scrim").classList.remove("hidden");
+  drawer.classList.remove("hidden");
+  $("pd-title").textContent = labelFor(id);
+  $("pd-sub").innerHTML = "";
+  $("pd-facts").innerHTML = "";
+  $("pd-sections").innerHTML = `<div class="pd-none">Loading…</div>`;
+  $("pd-body").scrollTop = 0;
+  $("pd-close").focus();
+
+  const data = await pdLoad(id);
+  if (token !== pdToken) return;     // closed, or another project was opened
+  pdRender(data);
+}
+
+async function pdLoad(id) {
+  const admin = me.role === "admin";
+  const jobs = [
+    sb.from("projects")
+      .select("id, number, name, folder, client, status, phase, next_action, is_overhead")
+      .eq("id", id).maybeSingle(),
+    sb.from("tasks")
+      .select("id, title, due_date, status, priority, assignee_id, notes")
+      .eq("project_id", id)
+      .order("due_date", { ascending: true, nullsFirst: false })
+      .order("id", { ascending: true }),
+    // confirmed only, and never a running timer — a reconstructed guess is not
+    // an hour. Same filter the Hours tab uses.
+    sb.from("time_entries")
+      .select("id, employee_id, work_date, minutes, task_kind, notes")
+      .eq("project_id", id).eq("confirmed", true).not("minutes", "is", null)
+      .order("work_date", { ascending: false }).order("id", { ascending: false })
+      .limit(PD_TIME_CAP),
+    sb.from("site_visits")
+      .select("id, visit_date, visit_type, attendee_name, outcome")
+      .eq("project_id", id).order("visit_date", { ascending: false }).limit(200),
+    admin ? sb.from("letters")
+      .select("id, status, scopes, performed_by, pages, updated_at")
+      .eq("project_id", id).order("updated_at", { ascending: false }) : null,
+    admin ? sb.from("proposals")
+      .select(`id, number, title, status, design_fee, visit_rate, hourly_rate,
+               link_confidence, link_note`)
+      .eq("project_id", id).order("number", { ascending: false }) : null,
+  ];
+  const [proj, tks, tme, vis, lts, pps] = await Promise.all(
+    jobs.map((j) => j || Promise.resolve({ data: null, error: null })));
+
+  return {
+    id, admin,
+    project: proj.data || null, projectError: proj.error || null,
+    tasks: tks.data || [], tasksError: tks.error || null,
+    time: tme.data || [], timeError: tme.error || null,
+    visits: vis.data || [], visitsError: vis.error || null,
+    letters: lts.data || [], lettersError: lts.error || null,
+    proposals: pps.data || [], proposalsError: pps.error || null,
+  };
+}
+
+function pdSection(label, total, rows, empty, error, note) {
+  const shown = rows.slice(0, PD_ROWS);
+  return `<div class="pd-sec" data-pdsec="${escapeHtml(label.toLowerCase())}">
+    <div class="gh">${escapeHtml(label)} <span>${total}</span></div>
+    ${error
+      ? `<div class="pd-none" style="color:var(--err)">Could not load this — ${
+          escapeHtml(error.message || String(error))}</div>`
+      : shown.length
+        ? `<table><tbody>${shown.join("")}</tbody></table>`
+        : `<div class="pd-none">${escapeHtml(empty)}</div>`}
+    ${total > shown.length ? `<div class="pd-more">${total - shown.length} more not shown.</div>` : ""}
+    ${note ? `<div class="pd-more">${escapeHtml(note)}</div>` : ""}
+  </div>`;
+}
+
+function pdRender(d) {
+  const p = d.project;
+  $("pd-title").textContent = p ? projLabel(p) : labelFor(d.id);
+
+  const head = [];
+  if (p && p.phase) head.push(`<span class="tag">${escapeHtml(p.phase)}</span>`);
+  if (p && p.status && p.status !== "active") {
+    head.push(`<span class="tag">${escapeHtml(p.status.replace("_", " "))}</span>`);
+  }
+  if (p && p.client) head.push(escapeHtml(p.client));
+  $("pd-sub").innerHTML = head.join(" ");
+
+  const openTasks = d.tasks.filter((t) => t.status === "open");
+  const minutes = d.time.reduce((a, r) => a + (r.minutes || 0), 0);
+  const capped = d.time.length >= PD_TIME_CAP;
+  const today = ymd(new Date());
+  const past = d.visits.filter((v) => v.visit_date <= today);      // already newest first
+  const ahead = d.visits.filter((v) => v.visit_date > today);
+  const last = past[0];
+  const next = ahead[ahead.length - 1];
+  const prop = d.proposals[0];
+
+  const facts = [
+    ["Open tasks", String(openTasks.length)],
+    // An employee's RLS view is their own entries, so the label has to say so
+    // rather than let a partial number read as the whole job's effort.
+    [d.admin ? "Hours logged" : "Your hours", (hrs(minutes) || "0") + (capped ? "+" : "")],
+    ["Last visit", last ? pdShortDate(last.visit_date) : "—"],
+    ["Next visit", next ? pdShortDate(next.visit_date) : "—"],
+  ];
+  if (d.admin) facts.push(["Letters", String(d.letters.length)]);
+  if (d.admin && prop) {
+    facts.push([`Proposal · ${PROPOSAL_STATUS_LABEL[prop.status] || prop.status}`, prop.number]);
+  }
+  $("pd-facts").innerHTML = facts.map(([k, n]) =>
+    `<div class="pd-fact"><div class="n">${escapeHtml(n)}</div>
+      <div class="k">${escapeHtml(k)}</div></div>`).join("");
+
+  const out = [];
+  if (d.projectError) {
+    out.push(`<div class="pd-none" style="color:var(--err)">Could not read the project — ${
+      escapeHtml(d.projectError.message)}</div>`);
+  }
+  if (p && p.next_action) {
+    out.push(`<div class="pd-next"><b>Next:</b> ${escapeHtml(p.next_action)}</div>`);
+  }
+
+  const taskRows = openTasks.map((t) => `
+    <tr>
+      <td class="when${t.due_date && t.due_date < today ? " late" : ""}">${
+        t.due_date ? escapeHtml(pdShortDate(t.due_date)) : "—"}</td>
+      <td>${escapeHtml(t.title)}${
+        t.priority === "high" ? ` <span class="tag nb">high</span>` : ""}${
+        t.notes ? `<div class="muted small">${escapeHtml(t.notes)}</div>` : ""}</td>
+      <td class="small muted">${escapeHtml(pdWho(t.assignee_id))}</td>
+    </tr>`);
+  out.push(pdSection("Tasks", openTasks.length, taskRows,
+    d.tasks.length ? "Nothing open — the rest are finished or dropped." : "No tasks on this job.",
+    d.tasksError));
+
+  const timeRows = d.time.map((r) => `
+    <tr>
+      <td class="when">${escapeHtml(pdShortDate(r.work_date))}</td>
+      <td>${escapeHtml(KIND_LABEL[r.task_kind] || r.task_kind)}${
+        r.notes ? `<div class="muted small">${escapeHtml(r.notes)}</div>` : ""}</td>
+      <td class="small muted">${escapeHtml(pdWho(r.employee_id))}</td>
+      <td class="num">${escapeHtml(hrs(r.minutes) || "0")}</td>
+    </tr>`);
+  out.push(pdSection("Time", d.time.length, timeRows,
+    d.admin ? "No confirmed hours on this job." : "You have no hours on this job.",
+    d.timeError, capped ? `Only the most recent ${PD_TIME_CAP} entries were read.` : ""));
+
+  const visitRows = d.visits.map((v) => `
+    <tr>
+      <td class="when">${escapeHtml(pdShortDate(v.visit_date))}</td>
+      <td>${escapeHtml(v.visit_type)}${
+        v.attendee_name ? `<div class="muted small">${escapeHtml(v.attendee_name)}</div>` : ""}</td>
+      <td class="small">${escapeHtml(OUTCOME_LABEL[v.outcome] || v.outcome)}</td>
+    </tr>`);
+  out.push(pdSection("Site visits", d.visits.length, visitRows,
+    "No visits recorded.", d.visitsError));
+
+  // Admin-only from here down. Not queried for anyone else, and not rendered.
+  if (d.admin) {
+    const letterRows = d.letters.map((lt) => `
+      <tr>
+        <td class="when">${escapeHtml(pdStampDate(lt.updated_at))}</td>
+        <td>${escapeHtml(letterScopeLabel(lt))}${
+          lt.performed_by ? `<div class="muted small">${escapeHtml(lt.performed_by)}</div>` : ""}</td>
+        <td class="small">${letterStatusHtml(lt)}</td>
+      </tr>`);
+    out.push(pdSection("Letters", d.letters.length, letterRows,
+      "No letters for this job.", d.lettersError));
+
+    const propRows = d.proposals.map((pr) => `
+      <tr>
+        <td class="when">${escapeHtml(pr.number)}</td>
+        <td>${escapeHtml(pr.title || "")}
+          <div class="muted small">${escapeHtml(PROPOSAL_STATUS_LABEL[pr.status] || pr.status)}${
+            pr.link_confidence === "suggested"
+              ? ` · <span class="tag nb" title="${escapeHtml(pr.link_note || "")}">unconfirmed link</span>`
+              : ""}</div></td>
+        <td class="num small">${pr.design_fee ? "$" + Number(pr.design_fee).toLocaleString() : ""}${
+          pr.visit_rate ? `<div class="muted">$${escapeHtml(String(pr.visit_rate))}/visit</div>` : ""}</td>
+      </tr>`);
+    out.push(pdSection("Proposal", d.proposals.length, propRows,
+      "No proposal is linked to this job.", d.proposalsError));
+  }
+
+  out.push(`<div class="pd-foot">
+    <a class="plink" data-pdtodo="${escapeHtml(String(d.id))}">Open its to-do list &rarr;</a>
+    ${p && p.folder
+      ? `<div style="margin-top:8px">Folder <span class="path">${escapeHtml(p.folder)}</span></div>`
+      : ""}
+  </div>`);
+
+  $("pd-sections").innerHTML = out.join("");
+  const todoLink = $("pd-sections").querySelector("[data-pdtodo]");
+  if (todoLink) {
+    todoLink.addEventListener("click", () => {
+      const id = todoLink.dataset.pdtodo;
+      closeProjectDrawer();
+      goToProject(id);
+    });
+  }
+}
+
+function closeProjectDrawer() {
+  const drawer = $("proj-drawer");
+  if (drawer.classList.contains("hidden")) return;
+  pdToken++;                          // any load still in flight is now stale
+  drawer.classList.add("hidden");
+  $("pd-scrim").classList.add("hidden");
+  const back = pdReturnFocus;
+  pdReturnFocus = null;
+  if (back && document.contains(back) && typeof back.focus === "function") {
+    back.focus();
+    // Coming back from a project opened out of the header search, focusing the
+    // box re-fires its focus handler and the empty result list springs open
+    // over the page. Put the caret back without the menu.
+    if (back.id === "gs-q") gsClose();
+  }
+}
+
+$("pd-close").addEventListener("click", closeProjectDrawer);
+$("pd-scrim").addEventListener("click", closeProjectDrawer);
+// Escape closes it. Harmless when it is shut — closeProjectDrawer returns
+// immediately — so this cannot interfere with the form comboboxes, which are
+// behind the scrim whenever the drawer is up.
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeProjectDrawer();
+});
+
+// One listener for every project label in the app, present and future.
+document.addEventListener("click", (e) => {
+  const el = e.target.closest && e.target.closest("[data-projlink]");
+  if (!el) return;
+  e.preventDefault();
+  openProjectDrawer(el.dataset.projlink);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const el = e.target.closest && e.target.closest("[data-projlink]");
+  if (!el) return;
+  e.preventDefault();
+  openProjectDrawer(el.dataset.projlink);
+});
+
+// ---------------------------------------------------- global project search
+// The header's way in: a number, an address or a client, then the drawer. Same
+// keyboard rules as the form comboboxes — arrows, Enter, Escape — but it is not
+// a field: picking opens the drawer and clears the box. Nothing focuses it at
+// boot, so it can never steal the caret on load.
+
+const GS_MAX = 8;
+const gs = { rows: [], hi: -1, open: false };
+
+function gsMatches(q) {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return [];
+  const rank = { active: 0, on_hold: 1, closed: 3 };
+  return projects
+    .filter((p) => `${p.number || ""} ${p.name} ${p.client || ""}`.toLowerCase().includes(needle))
+    .sort((a, b) => ((rank[a.status] ?? 2) - (rank[b.status] ?? 2)) ||
+      String(b.number || "").localeCompare(String(a.number || "")))
+    .slice(0, GS_MAX);
+}
+
+function gsRender() {
+  const box = $("gs-list");
+  if (!gs.rows.length) {
+    box.innerHTML = `<div class="none">${$("gs-q").value.trim()
+      ? "No project matches that." : "Type a number, an address or a client."}</div>`;
+    return;
+  }
+  box.innerHTML = gs.rows.map((p, i) => `
+    <div class="opt${i === gs.hi ? " on" : ""}" data-i="${i}" role="option"
+         aria-selected="${i === gs.hi}">${
+      p.is_overhead ? "" : `<span class="n">${escapeHtml(p.number || "")}</span>`
+    }${escapeHtml(p.name)}${
+      p.client ? `<span class="cl"> · ${escapeHtml(p.client)}</span>` : ""}</div>`).join("");
+  const on = box.querySelector(".opt.on");
+  if (on) on.scrollIntoView({ block: "nearest" });
+}
+
+function gsOpen() {
+  gs.rows = gsMatches($("gs-q").value);
+  gsRender();
+  $("gs-list").classList.remove("hidden");
+  $("gs-q").setAttribute("aria-expanded", "true");
+  gs.open = true;
+}
+function gsClose() {
+  $("gs-list").classList.add("hidden");
+  $("gs-q").setAttribute("aria-expanded", "false");
+  gs.open = false;
+  gs.hi = -1;
+}
+function gsChoose(i) {
+  const p = gs.rows[i];
+  if (!p) return;
+  $("gs-q").value = "";
+  gsClose();
+  openProjectDrawer(p.id);
+}
+
+$("gs-q").addEventListener("input", () => {
+  gs.rows = gsMatches($("gs-q").value);
+  gs.hi = gs.rows.length ? 0 : -1;
+  if (!gs.open) gsOpen(); else gsRender();
+});
+$("gs-q").addEventListener("focus", gsOpen);
+$("gs-q").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    if (!gs.open) return gsOpen();
+    gs.hi = Math.max(0, Math.min(gs.rows.length - 1, gs.hi + (e.key === "ArrowDown" ? 1 : -1)));
+    gsRender();
+  } else if (e.key === "Enter") {
+    if (gs.open && gs.hi >= 0) { e.preventDefault(); gsChoose(gs.hi); }
+  } else if (e.key === "Escape") {
+    // Consume it while the list is up, so one Escape closes the list and a
+    // second one closes the drawer rather than both going at once.
+    if (gs.open) { e.preventDefault(); e.stopPropagation(); gsClose(); }
+  }
+});
+$("gs-q").addEventListener("blur", () => setTimeout(gsClose, 120));
+$("gs-list").addEventListener("mousedown", (e) => {
+  const opt = e.target.closest(".opt");
+  if (!opt) return;
+  e.preventDefault();                 // keep focus so blur cannot undo the pick
+  gsChoose(Number(opt.dataset.i));
+});
+
 // ---------------------------------------------------------------- to do
 // The app owns this list (Ben, 2026-08-19). `commitments` is still the
 // read-only dashboard mirror; `tasks` is the thing you work from.
@@ -1238,9 +1627,7 @@ function taskRow(t) {
   const who = people.find((p) => p.id === t.assignee_id);
   const done = t.status !== "open";
   const bits = [];
-  if (t.project_id) {
-    bits.push(`<a data-goproj="${t.project_id}">${escapeHtml(labelFor(t.project_id))}</a>`);
-  }
+  if (t.project_id) bits.push(projLink(t.project_id));
   if (t.notes) bits.push(escapeHtml(t.notes));
   if (t.source === "dashboard") bits.push(`<span class="tag">from the dashboard</span>`);
 
@@ -1289,8 +1676,8 @@ function wireTaskRows() {
     }));
   box.querySelectorAll("[data-tdrop]").forEach((b) =>
     b.addEventListener("click", () => dropTask(b.dataset.tdrop)));
-  box.querySelectorAll("[data-goproj]").forEach((a) =>
-    a.addEventListener("click", () => goToProject(a.dataset.goproj)));
+  // The project name needs no wiring: projLink() rides the app-wide delegated
+  // listener, so it survives every re-render of this list.
 }
 
 async function saveTask(id, patch) {
@@ -1476,13 +1863,19 @@ function ageCell(t) {
   return `<td class="age ok">${d}d</td>`;
 }
 
+// Capped, with the rest a click away. Uncapped this ran about thirty rows and
+// several thousand pixels, which pushed everything else on the page below the
+// fold. The list itself — what is in it and the order it is in — is unchanged.
+const OV_ATTENTION_MAX = 10;
+
 function renderOvAttention(open) {
   const rank = { overdue: 0, today: 1, this_week: 2 };
-  const rows = open.filter((t) => bucketOf(t) in rank)
+  const all = open.filter((t) => bucketOf(t) in rank)
     .sort((a, b) => (rank[bucketOf(a)] - rank[bucketOf(b)]) ||
                     ((daysLeft(a) ?? 0) - (daysLeft(b) ?? 0)));
-  $("ov-att-count").textContent = rows.length ? `— ${rows.length}` : "";
-  $("ov-attention-empty").classList.toggle("hidden", rows.length > 0);
+  const rows = all.slice(0, OV_ATTENTION_MAX);
+  $("ov-att-count").textContent = all.length ? `— ${all.length}` : "";
+  $("ov-attention-empty").classList.toggle("hidden", all.length > 0);
   // Whole rows are a way in: tick it off here, or click the project to see
   // everything outstanding on that job.
   $("ov-attention").innerHTML = rows.map((t) => `
@@ -1498,13 +1891,28 @@ function renderOvAttention(open) {
             ${escapeHtml(t.title)}
           </label>
           ${t.due_date ? `<div class="small muted">${escapeHtml(t.due_date)}</div>` : ""}</td>
-    </tr>`).join("");
+    </tr>`).join("") +
+    (all.length > rows.length ? `
+    <tr><td></td>
+      <td class="right"><a data-ovall style="color:var(--teal-lt);cursor:pointer"
+        >View all ${all.length} &rarr;</a></td></tr>` : "");
 
   $("ov-attention").querySelectorAll("[data-ovdone]").forEach((c) =>
     c.addEventListener("change", () => saveTask(c.dataset.ovdone,
       { status: "done", completed_at: new Date().toISOString() })));
   $("ov-attention").querySelectorAll("[data-goproj]").forEach((a) =>
     a.addEventListener("click", () => goToProject(a.dataset.goproj)));
+  // The rest of the list lives on the To do tab, unfiltered — the same place
+  // the tiles lead to.
+  const more = $("ov-attention").querySelector("[data-ovall]");
+  if (more) {
+    more.addEventListener("click", () => {
+      todoBucketFilter = "";
+      $("td-filter-proj").value = "";
+      showTab("todo");
+      renderTodo();
+    });
+  }
 }
 
 function renderOvSchedule(vs) {
@@ -1903,7 +2311,7 @@ function renderHoursByProject() {
   $("hrs-table").classList.toggle("hidden", entries.length === 0);
   $("hrs-body").innerHTML = entries.map(([pid, b]) => `
     <tr>
-      <td>${escapeHtml(labelFor(pid))}</td>
+      <td>${projLink(pid)}</td>
       <td>${contractCell(pid)}</td>
       ${KIND_ORDER.map((k) => `<td class="num">${hrs(b.kinds[k] || 0)}</td>`).join("")}
       <td class="num"><strong>${hrs(b.total)}</strong></td>
@@ -2116,7 +2524,7 @@ function renderProposals() {
     const link = p.project_id
       // A merely address-matched link is marked, because billing off an
       // unverified link is how a fee lands on the wrong job.
-      ? `${escapeHtml(labelFor(p.project_id))}${
+      ? `${projLink(p.project_id)}${
           p.link_confidence === "suggested"
             ? ` <span class="tag nb" title="${escapeHtml(p.link_note || "")}">unconfirmed</span>`
             : ""}`
@@ -2278,7 +2686,7 @@ function renderVisits() {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${when}<div class="small muted">${escapeHtml(time)}</div></td>
-      <td>${escapeHtml(labelFor(v.project_id))}</td>
+      <td>${projLink(v.project_id)}</td>
       <td>${escapeHtml(v.visit_type)}${
         v.notes ? `<div class="small muted">${escapeHtml(v.notes)}</div>` : ""}</td>
       <td class="small">${escapeHtml(v.attendee_name)}</td>
@@ -2535,7 +2943,7 @@ function renderLetterBoard() {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td class="small">${escapeHtml(fmtWhen(lt.updated_at))}</td>
-      <td>${escapeHtml(labelFor(lt.project_id))}</td>
+      <td>${projLink(lt.project_id)}</td>
       <td><button class="btn ghost sm" data-ltopen="${lt.site_visit_id ?? ""}">${
         escapeHtml(letterScopeLabel(lt))}</button></td>
       <td class="small">${escapeHtml(lt.performed_by || "")}</td>
