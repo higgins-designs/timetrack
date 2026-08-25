@@ -412,6 +412,18 @@
   .chip button:hover { color: var(--err); background: var(--line); }
   table select, table input[type=number] { padding: 5px 8px; }
 
+  /* Letter composer chat. Ben's instructions read as chat bubbles; runner
+     results (paths, page counts, errors) as system lines between them. */
+  .lt-bubble {
+    background: var(--grey-bg); border: 1px solid var(--line);
+    padding: 8px 12px; margin: 6px 0; max-width: 640px;
+    white-space: pre-wrap; overflow-wrap: break-word;
+  }
+  .lt-bubble .small { margin-bottom: 2px; }
+  .lt-sys { font-size: 13px; color: var(--muted); margin: 6px 0;
+    overflow-wrap: break-word; }
+  .lt-sys.err { color: var(--err); }
+
   @media (max-width: 620px) {
     main { padding: 10px; }
     .card { padding: 12px; }
@@ -845,6 +857,7 @@
                 <th>Date</th><th>Project</th><th>Type</th><th>Who</th>
                 <th>Outcome</th><th class="num">Travel</th>
                 <th class="num admin-only-col hidden">Rate</th>
+                <th class="admin-only-col hidden">Letter</th>
                 <th>Calendar</th><th></th>
               </tr>
             </thead>
@@ -852,6 +865,55 @@
           </table>
         </div>
         <div id="visits-empty" class="empty">No site visits recorded.</div>
+      </div>
+
+      <!-- Letter composer. Admin-only: a letter carries engineering conclusions
+           over Ben's seal, so drafting one is Ben's act. The browser only
+           QUEUES the letter — the firmprint kit, the 009_letters templates and
+           the Dropbox tree all live on the office machine, so rendering happens
+           there (tools/generate-letters.mjs), same split as sync-visits.mjs. -->
+      <div class="card hidden" id="letter-card">
+        <h2>Letter <span class="muted" id="lt-scope"></span></h2>
+        <div id="lt-closed" class="empty">
+          Pick a visit in the log above — the Letter column — to draft its
+          observation letter.
+        </div>
+        <div id="lt-open" class="hidden">
+          <div class="row">
+            <div class="field grow">
+              <label>Visit</label>
+              <div id="lt-visit" class="small" style="padding:7px 0"></div>
+            </div>
+            <div class="field">
+              <label for="lt-type">Letter type</label>
+              <select id="lt-type"></select>
+            </div>
+            <div class="field">
+              <label>Status</label>
+              <div id="lt-status" style="padding:5px 0"></div>
+            </div>
+          </div>
+          <div id="lt-chat" style="margin-top:10px"></div>
+          <div class="row" style="margin-top:10px">
+            <div class="field grow">
+              <label for="lt-msg">Edits <span class="muted">(chat style — say what the letter should
+                cover or change; blank = the standard letter for this visit)</span></label>
+              <textarea id="lt-msg" rows="3"
+                placeholder="e.g. corrections were made on site for the stair-opening blocking; note the added holdowns at grid B"></textarea>
+            </div>
+            <div class="field" style="justify-content:flex-end">
+              <button class="btn" id="lt-go">Go</button>
+              <button class="btn ghost sm hidden" id="lt-issued" style="margin-top:6px">Mark issued</button>
+            </div>
+          </div>
+          <p class="small muted" style="margin:12px 0 0">
+            Go queues the letter; <code>tools/generate-letters.mjs</code> on the office
+            machine renders it through the firmprint kit and writes spec +
+            <code>(DRAFT)</code> PDF into the project's <code>letter\</code> folder.
+            Review it, stamp seal + signature in Bluebeam, and save without the
+            <code>(DRAFT)</code> marker. The browser cannot run the kit on its own.
+          </p>
+        </div>
       </div>
     </section>
 

@@ -197,6 +197,7 @@ async function boot(uid) {
     $("admin-card").classList.remove("hidden");
     $("tab-people-btn").classList.remove("hidden");
     $("tab-proposals-btn").classList.remove("hidden");
+    $("letter-card").classList.remove("hidden");
     await loadPeople();
   }
   initVisitForm();   // needs projects, and people if this is an admin
@@ -2173,6 +2174,7 @@ async function loadVisits() {
       .from("site_visit_billing")
       .select("visit_id, rate, rate_basis");
     for (const b of bill || []) visitBilling[b.visit_id] = b;
+    await loadLetters();
   }
   document.querySelectorAll(".admin-only-col").forEach((n) =>
     n.classList.toggle("hidden", me.role !== "admin"));
@@ -2181,6 +2183,9 @@ async function loadVisits() {
   renderVisitFilters();
   renderVisitStats();
   renderVisits();
+  // Refresh only the composer's status/chat — never its inputs, which may be
+  // holding a half-typed instruction.
+  renderLetterStatus();
 }
 
 function visibleVisits() {
@@ -2252,6 +2257,17 @@ function renderVisits() {
         ? `<span class="tag">historical</span>`
         : `<span class="tag nb">not booked</span>`;
 
+    // Letter status for this visit — the entry point Ben asked for: pick the
+    // visit in the log, then compose below.
+    const lt = lettersByVisit[v.id];
+    const ltColor = lt && lt.status === "error" ? "var(--err)"
+      : lt && (lt.status === "draft" || lt.status === "issued") ? "var(--ok)" : "";
+    const letterCell = me.role === "admin"
+      ? `<button class="btn ghost sm" data-vletter="${v.id}"${
+          ltColor ? ` style="color:${ltColor};border-color:${ltColor}"` : ""}>${
+          lt ? escapeHtml(LETTER_STATUS_LABEL[lt.status] || lt.status) : "Letter…"}</button>`
+      : "";
+
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${when}<div class="small muted">${escapeHtml(time)}</div></td>
@@ -2265,6 +2281,7 @@ function renderVisits() {
           </select></td>
       <td class="num small">${travel}</td>
       <td class="num small admin-only-col${me.role === "admin" ? "" : " hidden"}">${rate}</td>
+      <td class="admin-only-col${me.role === "admin" ? "" : " hidden"}">${letterCell}</td>
       <td>${cal}</td>
       <td class="right"><button class="btn ghost sm" data-vdel="${v.id}">Delete</button></td>`;
     body.appendChild(tr);
@@ -2274,6 +2291,8 @@ function renderVisits() {
     s.addEventListener("change", () => saveVisit(s.dataset.outcome, { outcome: s.value })));
   body.querySelectorAll("[data-vdel]").forEach((b) =>
     b.addEventListener("click", () => deleteVisit(b.dataset.vdel)));
+  body.querySelectorAll("[data-vletter]").forEach((b) =>
+    b.addEventListener("click", () => openLetterComposer(Number(b.dataset.vletter))));
 }
 
 async function saveVisit(id, patch) {
@@ -2349,6 +2368,216 @@ function initVisitForm() {
     .map((p) => `<option value="${p.id}"${p.id === me.id ? " selected" : ""}>${
       escapeHtml(p.full_name)}</option>`).join("");
 }
+
+// -------------------------------------------------------------- letters
+// The app only QUEUES a letter; tools/generate-letters.mjs on the office
+// machine builds the spec from the 009_letters template for the chosen type,
+// renders it through the firmprint kit, drops the PDF in
+// 009_letters\1 - For Review, and writes status/paths back onto the row.
+// Admin-only end to end (RLS): a letter goes out over Ben's seal.
+
+// Keys are the runner's template registry. Labels are what Ben picks from.
+const LETTER_TYPES = {
+  foundation: "Foundation observation",
+  framing: "Framing observation",
+  pool: "Pool observation",
+  trenching: "Trenching / pier observation",
+  general: "General letter",
+};
+
+const LETTER_STATUS_LABEL = {
+  queued: "queued", working: "rendering…", draft: "draft ready",
+  error: "error", issued: "issued",
+};
+
+// A prefill from the visit's own wording, never a decision — Ben can change it.
+function guessLetterType(v) {
+  const t = `${v.visit_type || ""} ${v.notes || ""}`.toLowerCase();
+  if (/trench|excavat|pier|grade beam/.test(t)) return "trenching";
+  if (/pool|gunite|shotcrete/.test(t)) return "pool";
+  if (/framing|sheathing|joist|ledger|deck/.test(t)) return "framing";
+  if (/pour|foundation|slab|rebar|steel/.test(t)) return "foundation";
+  return "general";
+}
+
+let letters = [];          // admin only; RLS returns nothing for anyone else
+let lettersByVisit = {};   // visit_id -> latest letter for that visit
+let letterVisitId = null;  // visit the composer is open on, or null
+
+async function loadLetters() {
+  if (me.role !== "admin") return; // RLS denies it anyway; don't even ask
+  const { data, error } = await sb
+    .from("letters")
+    .select(`id, project_id, site_visit_id, letter_type, status, messages,
+             spec_path, output_path, pages, error, created_at, updated_at`)
+    .order("id", { ascending: true });
+  if (error) return fail("Loading letters", error);
+  letters = data || [];
+  lettersByVisit = {};
+  for (const l of letters)
+    if (l.site_visit_id != null) lettersByVisit[l.site_visit_id] = l;
+}
+
+function letterStatusHtml(lt) {
+  if (!lt) return `<span class="muted">not started</span>`;
+  const label = LETTER_STATUS_LABEL[lt.status] || lt.status;
+  const color = lt.status === "error" ? "var(--err)"
+    : (lt.status === "draft" || lt.status === "issued") ? "var(--ok)" : "";
+  return `<span class="tag"${color ? ` style="color:${color};border-color:${color}"` : ""}>${
+    escapeHtml(label)}</span>`;
+}
+
+function fmtWhen(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? "" : d.toLocaleString(undefined,
+    { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function openLetterComposer(visitId) {
+  // Switching visits clears the edits box: half-typed instructions for one
+  // letter must never ride along and get appended to a different one. Same
+  // visit keeps the draft text (background refreshes never touch it).
+  if (letterVisitId !== visitId) $("lt-msg").value = "";
+  letterVisitId = visitId;
+  renderLetterComposer();
+  $("letter-card").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function syncLetterTypeOptions(lt, v) {
+  const sel = $("lt-type");
+  const want = lt ? lt.letter_type : guessLetterType(v);
+  // A row written with a type this build doesn't know must still display
+  // honestly rather than silently snapping to the first option.
+  if (![...sel.options].some((o) => o.value === want)) {
+    const o = document.createElement("option");
+    o.value = want; o.textContent = want;
+    sel.appendChild(o);
+  }
+  sel.value = want;
+}
+
+// Full render: only on open and after Go. It touches the type select, so it
+// must never run from a background data refresh — that is how half-typed
+// input gets eaten (see the week-grid postmortem in the README).
+function renderLetterComposer() {
+  const v = letterVisitId != null
+    ? visits.find((x) => x.id === letterVisitId) : null;
+  if (!v) letterVisitId = null;
+  const open = letterVisitId != null;
+  $("lt-closed").classList.toggle("hidden", open);
+  $("lt-open").classList.toggle("hidden", !open);
+  $("lt-scope").textContent = "";
+  if (!open) return;
+
+  const lt = lettersByVisit[v.id] || null;
+  $("lt-visit").innerHTML =
+    `<b>${escapeHtml(labelFor(v.project_id))}</b><br>` +
+    `${escapeHtml(v.visit_type)} · ${escapeHtml(v.visit_date)}` +
+    (v.attendee_name ? ` · ${escapeHtml(v.attendee_name)}` : "");
+  syncLetterTypeOptions(lt, v);
+  renderLetterStatus();
+}
+
+// Partial refresh: status line, chat and the issued button only. Safe to call
+// after any data reload — it never touches the textarea or the type select.
+function renderLetterStatus() {
+  if (letterVisitId == null) return;
+  const lt = lettersByVisit[letterVisitId] || null;
+
+  $("lt-status").innerHTML = letterStatusHtml(lt) +
+    (lt ? `<div class="small muted">${escapeHtml(fmtWhen(lt.updated_at))}</div>` : "");
+  $("lt-issued").classList.toggle("hidden", !(lt && lt.status === "draft"));
+
+  let h = "";
+  for (const m of (lt && Array.isArray(lt.messages) ? lt.messages : [])) {
+    h += `<div class="lt-bubble"><div class="small muted">${
+      escapeHtml(fmtWhen(m.at))}</div>${escapeHtml(m.text || "")}</div>`;
+  }
+  if (!lt) {
+    h += `<div class="lt-sys">Nothing queued yet — Go queues the standard letter
+      for this visit; the edits box is optional.</div>`;
+  } else {
+    if (lt.status === "queued")
+      h += `<div class="lt-sys">Queued — waiting for generate-letters.mjs on the office machine.</div>`;
+    if (lt.status === "working")
+      h += `<div class="lt-sys">The office machine is rendering this letter…</div>`;
+    if (lt.error)
+      h += `<div class="lt-sys err">${escapeHtml(lt.error)}</div>`;
+    if (lt.output_path)
+      h += `<div class="lt-sys">PDF: ${escapeHtml(lt.output_path)}${
+        lt.pages ? ` · ${lt.pages} page${lt.pages === 1 ? "" : "s"}` : ""}</div>`;
+  }
+  $("lt-chat").innerHTML = h;
+}
+
+$("lt-go").addEventListener("click", async () => {
+  if (me.role !== "admin" || letterVisitId == null) return;
+  const v = visits.find((x) => x.id === letterVisitId);
+  if (!v) return toast("That visit is gone — pick another from the log.", "err");
+  const type = $("lt-type").value;
+  if (!type) return toast("Pick a letter type first.", "err");
+  const text = $("lt-msg").value.trim();
+  const lt = lettersByVisit[v.id] || null;
+
+  $("lt-go").disabled = true;
+  try {
+    let toastMsg = "Letter queued — run generate-letters.mjs on the office machine.";
+    if (!lt || lt.status === "issued") {
+      // First letter for the visit — or a revision of an issued one. Issued
+      // is terminal (the record that a sealed letter went out must survive),
+      // so a revision is a NEW row, and it needs words to exist.
+      if (lt && !text)
+        return toast("That letter is issued. Type what the revision should change, then Go.", "err");
+      const messages = text ? [{ at: new Date().toISOString(), text }] : [];
+      const { error } = await sb.from("letters").insert({
+        project_id: v.project_id,
+        site_visit_id: v.id,
+        letter_type: type,
+        status: "queued",
+        messages,
+        requested_by: me.id,
+      });
+      if (error) return fail("Queuing the letter", error);
+      if (lt) toastMsg = "Revision queued as a new letter — the issued record stays.";
+    } else {
+      // Re-queue through the server-side queue_letter(): the append happens
+      // atomically in the database, so a stale tab can never erase messages
+      // added from another device — and if the runner is mid-render, its
+      // writebacks are fenced on its claim, so this re-queue wins.
+      const { data, error } = await sb.rpc("queue_letter", {
+        p_letter_id: lt.id, p_text: text || null, p_letter_type: type,
+      });
+      if (error) return fail("Re-queuing the letter", error);
+      if (!data || !data.length)
+        return toast("That change did not save — the letter row is not editable.", "warn");
+    }
+    $("lt-msg").value = "";
+    await loadLetters();
+    renderVisits();
+    renderLetterStatus();
+    toast(toastMsg);
+  } finally {
+    $("lt-go").disabled = false;
+  }
+});
+
+$("lt-issued").addEventListener("click", async () => {
+  if (letterVisitId == null) return;
+  const lt = lettersByVisit[letterVisitId];
+  if (!lt || lt.status !== "draft") return;
+  const { data, error } = await sb.from("letters")
+    .update({ status: "issued" }).eq("id", lt.id).eq("status", "draft").select("id");
+  if (error) return fail("Marking the letter issued", error);
+  if (!data || !data.length) return toast("That change did not save.", "warn");
+  await loadLetters();
+  renderVisits();
+  renderLetterStatus();
+  toast("Marked issued.");
+});
+
+// The type list is static HTML, so this attaches once, like the filter selects.
+$("lt-type").innerHTML = Object.entries(LETTER_TYPES)
+  .map(([k, l]) => `<option value="${k}">${escapeHtml(l)}</option>`).join("");
 
 // ---------------------------------------------------------------- admin
 
