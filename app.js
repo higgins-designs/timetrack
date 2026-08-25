@@ -3472,7 +3472,10 @@ function loadLettersTab() {
   // therefore found an empty array, closed the composer and made the button
   // look dead. loadVisits() also loads letters for an admin, so one call
   // covers this board and the composer both.
-  loadVisits().then(() => { renderLetterBoard(); renderLetterStatus(); syncLetterPoll(); });
+  loadVisits().then(() => {
+    renderLetterBoard(); renderLetterStatus(); syncLetterPoll();
+    applyLetterComposerMin(); // restore the saved collapsed state on arrival
+  });
 }
 
 // The board is fetch-on-open: nothing here subscribes, so a letter queued
@@ -3635,6 +3638,38 @@ function fmtWhen(iso) {
     { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
+// The composer is tall and sits under the board, so it pushes the letter list
+// off screen once you are only reading. Minimizing collapses the body and
+// keeps the header, and the choice survives a reload.
+const LT_MIN_KEY = "hd-letters-composer-min";
+let letterComposerMin = (() => {
+  try { return localStorage.getItem(LT_MIN_KEY) === "1"; } catch { return false; }
+})();
+
+function applyLetterComposerMin() {
+  $("lt-body").classList.toggle("hidden", letterComposerMin);
+  $("lt-min").textContent = letterComposerMin ? "Show" : "Minimize";
+  // Minimized, the header is the only thing left, so say what is behind it —
+  // otherwise a queued letter is collapsed out of sight with no trace.
+  if (letterComposerMin && letterVisitId != null) {
+    const v = visits.find((x) => x.id === letterVisitId);
+    const lt = lettersByVisit[letterVisitId] || null;
+    $("lt-scope").textContent = v
+      ? `— ${labelFor(v.project_id)}${lt ? ` · ${LETTER_STATUS_LABEL[lt.status] || lt.status}` : ""}`
+      : "";
+  } else if (letterComposerMin) {
+    $("lt-scope").textContent = "";
+  }
+}
+
+function setLetterComposerMin(min) {
+  letterComposerMin = min;
+  try { localStorage.setItem(LT_MIN_KEY, min ? "1" : "0"); } catch { /* private mode */ }
+  applyLetterComposerMin();
+}
+
+$("lt-min").addEventListener("click", () => setLetterComposerMin(!letterComposerMin));
+
 async function openLetterComposer(visitId) {
   // Never fail silently. renderLetterComposer resolves the visit out of
   // `visits` and closes itself when it cannot find one, so a click on a
@@ -3646,6 +3681,10 @@ async function openLetterComposer(visitId) {
       return toast("That letter's site visit could not be loaded, so the composer cannot open on it.", "err");
     }
   }
+  // Opening a letter always expands. A collapsed composer would swallow the
+  // click exactly like the unloaded-visits bug did — the row would highlight
+  // and nothing would appear.
+  if (letterComposerMin) setLetterComposerMin(false);
   // Switching visits clears the edits box: half-typed instructions for one
   // letter must never ride along and get appended to a different one. Same
   // visit keeps the draft text (background refreshes never touch it).
@@ -3719,6 +3758,9 @@ function renderLetterComposer() {
     (v.attendee_name ? ` · ${escapeHtml(v.attendee_name)}` : "");
   syncComposerInputs(lt, v);
   renderLetterStatus();
+  // Last: this render blanks #lt-scope, which is where the minimized summary
+  // lives, so re-apply after rather than before.
+  applyLetterComposerMin();
 }
 
 // Partial refresh: status line, chat and the issued button only. Safe to call

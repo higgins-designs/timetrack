@@ -1181,7 +1181,12 @@
       </div>
 
       <div class="card" id="letter-card">
-        <h2>Compose <span class="muted" id="lt-scope"></span></h2>
+        <h2>Compose <span class="muted" id="lt-scope"></span>
+          <button class="btn ghost sm" id="lt-min" style="margin-left:auto">Minimize</button>
+        </h2>
+        <!-- One wrapper so minimizing is a single class toggle and cannot get out
+             of step with the closed/open pair inside it. -->
+        <div id="lt-body">
         <div id="lt-closed" class="empty">
           Pick a visit in the Site visits log — the Letter column — to draft its
           observation letter.
@@ -1230,6 +1235,7 @@
             moves itself to <code>2 - Sent</code>.
           </p>
         </div>
+        </div><!-- /lt-body -->
       </div>
     </section>
 
