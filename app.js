@@ -3214,8 +3214,12 @@ function renderVisits() {
     const ltColor = lt && lt.status === "error" ? "var(--err)"
       : lt && (lt.status === "draft" || lt.status === "issued") ? "var(--ok)" : "";
     const letterCell = me.role === "admin"
+      // Labelled with the status once a letter exists, which reads as a badge
+      // rather than a control — the title says out loud that it opens.
       ? `<button class="btn ghost sm" data-vletter="${v.id}"${
-          ltColor ? ` style="color:${ltColor};border-color:${ltColor}"` : ""}>${
+          ltColor ? ` style="color:${ltColor};border-color:${ltColor}"` : ""} title="${
+          lt ? "Open this letter in the composer to review or change it."
+             : "Compose a letter from this visit."}">${
           lt ? escapeHtml(LETTER_STATUS_LABEL[lt.status] || lt.status) : "Letter…"}</button>`
       : "";
 
@@ -3517,6 +3521,24 @@ function renderLetterProjectFilter() {
   if (keep) sel.value = keep;
 }
 
+// The only ways into the composer used to be the scope text on this board and
+// a button on the visits log labelled with the letter's STATUS — both read as
+// labels, not actions, so "change this letter" had no visible door. This is
+// that door. Issued is terminal, so there it opens the composer to start a
+// NEW revision rather than to edit the sealed record.
+function reviseButtonHtml(lt) {
+  if (lt.site_visit_id == null) {
+    return `<button class="btn ghost sm" disabled
+      title="This letter is not attached to a site visit, so the composer cannot open on it.">Revise</button> `;
+  }
+  const issued = lt.status === "issued";
+  return `<button class="btn ghost sm" data-ltopen="${lt.site_visit_id}" title="${
+    issued
+      ? "This letter was issued. Opens the composer to queue a NEW revision — the sealed record stays."
+      : "Open the composer to change this letter and regenerate the PDF."
+  }">${issued ? "New revision" : "Revise"}</button> `;
+}
+
 function renderLetterBoard() {
   const body = $("letters-body");
   renderLetterProjectFilter();
@@ -3549,7 +3571,8 @@ function renderLetterBoard() {
       <td>${letterStatusHtml(lt)}</td>
       <td class="num small">${lt.pages ?? ""}</td>
       <td>${file}</td>
-      <td class="right"><button class="btn ghost sm" data-ltdel="${lt.id}">Delete</button></td>`;
+      <td class="right">${reviseButtonHtml(lt)}<button class="btn ghost sm" data-ltdel="${
+        lt.id}">Delete</button></td>`;
     body.appendChild(tr);
   }
   body.querySelectorAll("[data-ltopen]").forEach((b) =>
