@@ -201,6 +201,12 @@ async function boot(uid) {
   $("login").classList.add("hidden");
   $("app").classList.remove("hidden");
   $("who").textContent = `${me.full_name}${me.role === "admin" ? " · admin" : ""}`;
+  // The phone masthead shows initials instead (CSS). Same fact, a tenth of the
+  // width, and it keeps the firm name from being an ellipsis.
+  $("who-short").textContent = me.full_name.trim().split(/\s+/)
+    .map((w) => w[0]).join("").slice(0, 3).toUpperCase() +
+    (me.role === "admin" ? " ·" : "");
+  $("who-short").title = $("who").textContent;
   $("m-date").value = ymd(new Date());
   dayDate = ymd(new Date());
 
@@ -1187,6 +1193,8 @@ async function openProjectDrawer(projectId) {
   $("pd-title").textContent = labelFor(id);
   $("pd-sub").innerHTML = "";
   $("pd-facts").innerHTML = "";
+  $("pd-actions").innerHTML = "";      // no stale actions over a different job
+  pdProposals = [];
   $("pd-sections").innerHTML = `<div class="pd-none">Loading…</div>`;
   $("pd-body").scrollTop = 0;
   $("pd-close").focus();
@@ -1239,32 +1247,76 @@ async function pdLoad(id) {
   };
 }
 
+// Where each section's heading count leads. The key is the section's own
+// data-pdsec value, so the two can never drift apart.
+//
+// "Time" goes to Hours & Fees, not the Time tab: the Time tab is one person's
+// timesheet for today and this week, and Hours & Fees is the module that reports
+// a JOB's hours. Every one of these is a real filter that survives the target
+// tab's next render — see the keep-the-current-value handling in each of
+// renderTodoProjectFilter / renderVisitFilters / renderLetterProjectFilter /
+// renderProposalProjectFilter / renderHoursProjectFilter.
+const PD_GO = {
+  tasks: "Open the To do tab, filtered to this project",
+  time: "Open Hours & Fees, filtered to this project",
+  "site visits": "Open the Site visits log, filtered to this project",
+  letters: "Open the Letters board, filtered to this project",
+  proposal: "Open the Proposals register, filtered to this project",
+};
+
 function pdSection(label, total, rows, empty, error, note) {
   const shown = rows.slice(0, PD_ROWS);
-  return `<div class="pd-sec" data-pdsec="${escapeHtml(label.toLowerCase())}">
-    <div class="gh">${escapeHtml(label)} <span>${total}</span></div>
+  const key = label.toLowerCase();
+  // A count of zero is not a way in — an empty filtered module is a dead end,
+  // and an affordance that leads nowhere is worse than none.
+  const goable = Boolean(PD_GO[key]) && total > 0;
+  const count = goable
+    ? `<button class="cnt" type="button" data-pdgo="${escapeHtml(key)}"
+         title="${escapeHtml(PD_GO[key])}">${total}</button>`
+    : `<span>${total}</span>`;
+  return `<div class="pd-sec" data-pdsec="${escapeHtml(key)}">
+    <div class="gh">${escapeHtml(label)} ${count}</div>
     ${error
       ? `<div class="pd-none" style="color:var(--err)">Could not load this — ${
           escapeHtml(error.message || String(error))}</div>`
       : shown.length
         ? `<table><tbody>${shown.join("")}</tbody></table>`
         : `<div class="pd-none">${escapeHtml(empty)}</div>`}
-    ${total > shown.length ? `<div class="pd-more">${total - shown.length} more not shown.</div>` : ""}
+    ${total > shown.length ? `<div class="pd-more">${total - shown.length} more not shown.${
+      goable ? ` <button class="cnt" type="button" data-pdgo="${escapeHtml(key)}"
+        title="${escapeHtml(PD_GO[key])}">View all ${total} &rarr;</button>` : ""}</div>` : ""}
     ${note ? `<div class="pd-more">${escapeHtml(note)}</div>` : ""}
   </div>`;
 }
 
+// Clip a long free-text field for a single-line slot. The drawer IS the
+// project's own view, so unlike the search results this one keeps the full text
+// in a title — but it still must not wrap the fixed header to four lines.
+function pdClip(s, n) {
+  const v = String(s == null ? "" : s).trim();
+  return v.length > n ? v.slice(0, n - 1).trimEnd() + "…" : v;
+}
+
 function pdRender(d) {
   const p = d.project;
+  pdProposals = d.proposals;          // what the resolve buttons act on
   $("pd-title").textContent = p ? projLabel(p) : labelFor(d.id);
+  if (p) gsRemember(d.id);
 
-  const head = [];
-  if (p && p.phase) head.push(`<span class="tag">${escapeHtml(p.phase)}</span>`);
-  if (p && p.status && p.status !== "active") {
-    head.push(`<span class="tag">${escapeHtml(p.status.replace("_", " "))}</span>`);
+  // ONE restrained identity line: client · phase · status. There is deliberately
+  // no project-manager field here — `timetrack.projects` has id, number, name,
+  // folder, client, status, is_overhead, created_at, updated_at, phase,
+  // phase_index, next_action and nothing else. Inventing a PM would mean
+  // choosing a person the database never named.
+  const ident = [];
+  if (p && p.client) {
+    ident.push(`<span title="${escapeHtml(p.client)}">${escapeHtml(pdClip(p.client, 60))}</span>`);
   }
-  if (p && p.client) head.push(escapeHtml(p.client));
-  $("pd-sub").innerHTML = head.join(" ");
+  if (p && p.phase) ident.push(escapeHtml(p.phase));
+  if (p && p.status) ident.push(escapeHtml(String(p.status).replace(/_/g, " ")));
+  $("pd-sub").innerHTML = ident.length
+    ? ident.join(`<span class="sep"> · </span>`)
+    : `<span class="muted">No client, phase or status recorded.</span>`;
 
   const openTasks = d.tasks.filter((t) => t.status === "open");
   const minutes = d.time.reduce((a, r) => a + (r.minutes || 0), 0);
@@ -1276,21 +1328,40 @@ function pdRender(d) {
   const next = ahead[ahead.length - 1];
   const prop = d.proposals[0];
 
+  // CERTAINTY LANGUAGE. The tile used to read "0 hours logged" while the section
+  // under it read "No confirmed hours" — two different claims about the same
+  // number. Only confirmed entries are summed (a reconstructed draft is not an
+  // hour), so the tile says confirmed too. Same rule anywhere a figure is
+  // inferred rather than directly linked: the proposal below is joined by
+  // link_confidence, so an unconfirmed link is marked ON THE TILE, not only down
+  // in the section where you would have to scroll to find it.
   const facts = [
-    ["Open tasks", String(openTasks.length)],
+    ["Open tasks", String(openTasks.length), ""],
     // An employee's RLS view is their own entries, so the label has to say so
     // rather than let a partial number read as the whole job's effort.
-    [d.admin ? "Hours logged" : "Your hours", (hrs(minutes) || "0") + (capped ? "+" : "")],
-    ["Last visit", last ? pdShortDate(last.visit_date) : "—"],
-    ["Next visit", next ? pdShortDate(next.visit_date) : "—"],
+    [d.admin ? "Confirmed h" : "Your confirmed h",
+      (hrs(minutes) || "0") + (capped ? "+" : ""),
+      "Confirmed time entries only — reconstructed drafts and running timers are not counted"],
+    ["Last visit", last ? pdShortDate(last.visit_date) : "—", ""],
+    ["Next visit", next ? pdShortDate(next.visit_date) : "—", ""],
   ];
-  if (d.admin) facts.push(["Letters", String(d.letters.length)]);
+  if (d.admin) facts.push(["Letters", String(d.letters.length), ""]);
   if (d.admin && prop) {
-    facts.push([`Proposal · ${PROPOSAL_STATUS_LABEL[prop.status] || prop.status}`, prop.number]);
+    const unsure = prop.link_confidence === "suggested";
+    facts.push([
+      `Proposal · ${PROPOSAL_STATUS_LABEL[prop.status] || prop.status}${unsure ? " ·" : ""}`,
+      prop.number,
+      unsure ? "This proposal is matched to this job by address only — not confirmed" : "",
+      unsure ? "unconfirmed" : "",
+    ]);
   }
-  $("pd-facts").innerHTML = facts.map(([k, n]) =>
-    `<div class="pd-fact"><div class="n">${escapeHtml(n)}</div>
-      <div class="k">${escapeHtml(k)}</div></div>`).join("");
+  $("pd-facts").innerHTML = facts.map(([k, n, tip, flag]) =>
+    `<div class="pd-fact"${tip ? ` title="${escapeHtml(tip)}"` : ""}>
+      <div class="n">${escapeHtml(n)}</div>
+      <div class="k">${escapeHtml(k)}${
+        flag ? ` <span class="tag nb">${escapeHtml(flag)}</span>` : ""}</div></div>`).join("");
+
+  pdRenderActions(d);
 
   const out = [];
   if (d.projectError) {
@@ -1355,7 +1426,7 @@ function pdRender(d) {
           <div class="muted small">${escapeHtml(PROPOSAL_STATUS_LABEL[pr.status] || pr.status)}${
             pr.link_confidence === "suggested"
               ? ` · <span class="tag nb" title="${escapeHtml(pr.link_note || "")}">unconfirmed link</span>`
-              : ""}</div></td>
+              : ""}</div>${pdLinkResolveHtml(pr)}</td>
         <td class="num small">${pr.design_fee ? "$" + Number(pr.design_fee).toLocaleString() : ""}${
           pr.visit_rate ? `<div class="muted">$${escapeHtml(String(pr.visit_rate))}/visit</div>` : ""}</td>
       </tr>`);
@@ -1364,7 +1435,7 @@ function pdRender(d) {
   }
 
   out.push(`<div class="pd-foot">
-    <a class="plink" data-pdtodo="${escapeHtml(String(d.id))}">Open its to-do list &rarr;</a>
+    <a class="plink" data-pdtodo="${escapeHtml(String(d.id))}">Open project tasks &rarr;</a>
     ${p && p.folder
       ? `<div style="margin-top:8px">Folder <span class="path">${escapeHtml(p.folder)}</span></div>`
       : ""}
@@ -1378,6 +1449,199 @@ function pdRender(d) {
       closeProjectDrawer();
       goToProject(id);
     });
+  }
+  // Controls inside innerHTML are re-wired on every render, without exception.
+  $("pd-sections").querySelectorAll("[data-pdgo]").forEach((b) =>
+    b.addEventListener("click", () => pdGo(b.dataset.pdgo, d.id)));
+  $("pd-sections").querySelectorAll("[data-pdconfirm]").forEach((b) =>
+    b.addEventListener("click", () => pdConfirmLink(Number(b.dataset.pdconfirm), d.id)));
+  $("pd-sections").querySelectorAll("[data-pddrop]").forEach((b) =>
+    b.addEventListener("click", () => pdDropLink(Number(b.dataset.pddrop), d.id)));
+}
+
+// ------------------------------------------------- resolving a proposal link
+// An address-matched link is a GUESS, and it is a consequential one: once
+// link_confidence is 'confirmed' on a SIGNED proposal that states a per-visit
+// fee, timetrack_private.contracted_visit_rate() starts returning that rate and
+// the seed_visit_billing trigger stamps it onto every visit inserted afterwards.
+// So the button says what it arms, and there is a second, explicit confirm step
+// before anything is written.
+function pdLinkResolveHtml(pr) {
+  if (pr.link_confidence !== "suggested") return "";
+  const arms = pr.status === "signed" && pr.visit_rate;
+  const label = arms
+    ? `Confirm link — arms $${escapeHtml(String(pr.visit_rate))}/visit on future visits`
+    : `Confirm link — this proposal is this job`;
+  const tip = arms
+    ? `Sets link_confidence to confirmed. ${pr.number} is signed at $${pr.visit_rate} per visit, ` +
+      `so confirming makes that the contracted rate stamped onto every site visit logged from now on.`
+    : `Sets link_confidence to confirmed: this proposal really does belong to this project. ` +
+      `${pr.number} is ${PROPOSAL_STATUS_LABEL[pr.status] || pr.status} with no per-visit fee, ` +
+      `so no rate is armed by it today.`;
+  return `<div class="pd-resolve">
+    <button class="arm" type="button" data-pdconfirm="${pr.id}"
+      title="${escapeHtml(tip)}">${label}</button>
+    <button class="drop" type="button" data-pddrop="${pr.id}"
+      title="${escapeHtml(`Clears the suggested match: ${pr.number} stops being attached to this ` +
+        `project. The proposal itself is not deleted.`)}">Not this job</button>
+  </div>`;
+}
+
+async function pdConfirmLink(proposalId, projectId) {
+  const pr = pdProposalById(proposalId);
+  if (!pr) return;
+  const arms = pr.status === "signed" && pr.visit_rate;
+  const msg = `Confirm that proposal ${pr.number} is this project?\n\n` +
+    (arms
+      ? `${pr.number} is SIGNED at $${pr.visit_rate} per visit.\n\n` +
+        `Confirming this link arms the contracted visit rate: every site visit ` +
+        `logged on this project from now on will be stamped $${pr.visit_rate}. ` +
+        `Visits already on record are not changed.`
+      : `No per-visit rate is armed by this — ${pr.number} is ` +
+        `${(PROPOSAL_STATUS_LABEL[pr.status] || pr.status).toLowerCase()}` +
+        `${pr.visit_rate ? "" : " with no per-visit fee"}. It records that the ` +
+        `address match was checked and is right.`);
+  if (!confirm(msg)) return;
+
+  const { data, error } = await sb.from("proposals")
+    .update({ link_confidence: "confirmed" }).eq("id", proposalId).select("id");
+  if (error) return fail("Confirming the proposal link", error);
+  if (!data || !data.length) {
+    return toast("Nothing changed — that proposal is not yours to edit.", "warn");
+  }
+  toast(arms ? `Linked. $${pr.visit_rate}/visit is now the contracted rate.` : "Link confirmed.");
+  await pdAfterLinkChange(projectId);
+}
+
+async function pdDropLink(proposalId, projectId) {
+  const pr = pdProposalById(proposalId);
+  if (!pr) return;
+  if (!confirm(`Detach proposal ${pr.number} from this project?\n\n` +
+      `The suggested match was made on address alone. Detaching leaves ${pr.number} ` +
+      `on the register with no project, so nothing bills from it. The proposal ` +
+      `itself is not deleted.`)) return;
+
+  const { data, error } = await sb.from("proposals")
+    .update({ project_id: null, link_confidence: null }).eq("id", proposalId).select("id");
+  if (error) return fail("Detaching the proposal", error);
+  if (!data || !data.length) {
+    return toast("Nothing changed — that proposal is not yours to edit.", "warn");
+  }
+  toast(`${pr.number} is no longer linked to this job.`);
+  await pdAfterLinkChange(projectId);
+}
+
+// The drawer holds the only copy of what it loaded, so re-read rather than
+// patch it in place — and refresh the Proposals register if it is already
+// loaded, or its table would still show the old confidence.
+let pdProposals = [];
+function pdProposalById(id) {
+  return pdProposals.find((x) => x.id === id) ||
+    proposals.find((x) => x.id === id) || null;
+}
+async function pdAfterLinkChange(projectId) {
+  if (proposals.length) await loadProposals();
+  await openProjectDrawer(projectId);
+}
+
+// Where a section heading count leads. Each target sets a filter the module
+// itself keeps across renders, so it survives the tab's own reload.
+function pdGo(key, projectId) {
+  const id = String(projectId);
+  closeProjectDrawer();
+  if (key === "tasks") return goToProject(id);
+  if (key === "time") {
+    setHoursProjectFilter(id);
+    showTab("hours");
+    return;
+  }
+  if (key === "site visits") {
+    setVisitProjectFilter(id);
+    showTab("visits");
+    return;
+  }
+  if (key === "letters") {
+    setLetterProjectFilter(id);
+    showTab("letters");
+    return;
+  }
+  if (key === "proposal") {
+    setProposalProjectFilter(id);
+    showTab("proposals");
+  }
+}
+
+// ------------------------------------------------------------ quick actions
+// Each one lands on a flow that is genuinely preselected. "Draft letter" is the
+// exception and says so: a letter is composed FROM A SITE VISIT, not from a
+// project, so it opens the visits log for this job — where the Letter button
+// lives on each row — rather than pretending the composer can be opened on a
+// project. It is admin-only, and simply not emitted for anyone else.
+function pdRenderActions(d) {
+  const p = d.project;
+  const id = String(d.id);
+  const acts = [
+    ["task", "Add task", "Add a task on this project", false],
+    ["time", "Log time", "Open the timer with this project already picked", false],
+    ["visit", "Schedule visit", "Open the visit form with this project already picked", false],
+  ];
+  if (d.admin) {
+    acts.push(["letter", "Draft letter",
+      d.visits.length
+        ? "A letter is written from a site visit — opens this project's visits log, where each row has a Letter button"
+        : "No site visit on this project yet. A letter is always written from a visit.",
+      d.visits.length === 0]);
+  }
+  acts.push(["folder", "Open folder",
+    p && p.folder
+      ? `Copy the folder path — a browser cannot open Explorer:\n${p.folder}`
+      : "No folder path on record for this project.",
+    !(p && p.folder)]);
+
+  $("pd-actions").innerHTML = acts.map(([k, label, title, off]) =>
+    `<button type="button" data-pdact="${escapeHtml(k)}" title="${escapeHtml(title)}"${
+      off ? " disabled" : ""}>${escapeHtml(label)}</button>`).join("");
+
+  $("pd-actions").querySelectorAll("[data-pdact]").forEach((b) =>
+    b.addEventListener("click", () => pdAct(b.dataset.pdact, id, p)));
+}
+
+function pdAct(what, id, p) {
+  if (what === "folder") {
+    if (!p || !p.folder) return;
+    // A page served over http cannot navigate to file:// — the browser blocks
+    // it silently. Handing over the path is the honest version.
+    navigator.clipboard?.writeText(p.folder).then(
+      () => toast("Folder path copied — paste it into Explorer."),
+      () => toast(p.folder, "warn"));
+    return;
+  }
+  closeProjectDrawer();
+  if (what === "task") {
+    setTodoProjectFilter(id);
+    showTab("todo");
+    setCombo("td-proj", id);
+    renderTodo();
+    $("td-title").focus();
+    return;
+  }
+  if (what === "time") {
+    showTab("time");
+    setCombo("proj", id);
+    $("notes").focus();
+    return;
+  }
+  if (what === "visit") {
+    setVisitProjectFilter(id);
+    showTab("visits");
+    setCombo("v-proj", id);
+    $("v-date").focus();
+    return;
+  }
+  if (what === "letter") {
+    // The visits log, filtered to this project. See pdRenderActions.
+    setVisitProjectFilter(id);
+    showTab("visits");
   }
 }
 
@@ -1429,17 +1693,102 @@ document.addEventListener("keydown", (e) => {
 // boot, so it can never steal the caret on load.
 
 const GS_MAX = 8;
-const gs = { rows: [], hi: -1, open: false };
+const gs = { rows: [], hi: -1, open: false, needle: "", recent: false };
+
+// "Recently opened", and it means exactly that — projects THIS BROWSER opened in
+// the drawer, newest first. Not "recently worked on", which nothing records, and
+// not "recently updated", which would need a query on every focus. Kept in
+// localStorage beside the theme so it survives a reload.
+const GS_RECENT_KEY = "hd-gs-recent";
+const GS_RECENT_MAX = 5;
+function gsRecentIds() {
+  try {
+    const v = JSON.parse(localStorage.getItem(GS_RECENT_KEY) || "[]");
+    return Array.isArray(v) ? v.map(String) : [];
+  } catch { return []; }
+}
+function gsRemember(id) {
+  const ids = [String(id), ...gsRecentIds().filter((x) => x !== String(id))]
+    .slice(0, GS_RECENT_MAX);
+  try { localStorage.setItem(GS_RECENT_KEY, JSON.stringify(ids)); } catch { /* private mode */ }
+}
+function gsRecentRows() {
+  return gsRecentIds()
+    .map((id) => projects.find((p) => String(p.id) === id))
+    .filter(Boolean);
+}
 
 function gsMatches(q) {
   const needle = q.trim().toLowerCase();
   if (!needle) return [];
   const rank = { active: 0, on_hold: 1, closed: 3 };
+  // Matching stays on the WIDE text — number, address and the whole client
+  // field. Only the display is trimmed (see gsRender): a client string is
+  // sometimes a paragraph of internal notes, and being able to find a job by a
+  // name buried in it is worth keeping.
   return projects
     .filter((p) => `${p.number || ""} ${p.name} ${p.client || ""}`.toLowerCase().includes(needle))
     .sort((a, b) => ((rank[a.status] ?? 2) - (rank[b.status] ?? 2)) ||
       String(b.number || "").localeCompare(String(a.number || "")))
     .slice(0, GS_MAX);
+}
+
+// First occurrence only, escaped on both sides of the <mark>.
+function gsMark(text, needle) {
+  const s = String(text == null ? "" : text);
+  if (!needle) return escapeHtml(s);
+  const i = s.toLowerCase().indexOf(needle);
+  if (i < 0) return escapeHtml(s);
+  return escapeHtml(s.slice(0, i)) +
+    `<mark>${escapeHtml(s.slice(i, i + needle.length))}</mark>` +
+    escapeHtml(s.slice(i + needle.length));
+}
+
+// How much of a free-text field a result line may carry. Long enough to
+// identify a client, far short of a paragraph.
+const GS_CLIP = 48;
+
+// A bounded window of a long field. If the match falls outside the opening
+// window the window moves to it, so searching by a name buried in a note still
+// shows you why the row came back — without carrying the note.
+function gsSnippet(text, needle) {
+  const s = String(text == null ? "" : text).trim();
+  if (s.length <= GS_CLIP) return s;
+  const i = needle ? s.toLowerCase().indexOf(needle) : -1;
+  if (i < 0 || i + needle.length <= GS_CLIP - 1) {
+    return s.slice(0, GS_CLIP - 1).trimEnd() + "…";
+  }
+  const start = Math.max(0, i - 12);
+  return "…" + s.slice(start, start + GS_CLIP - 2).trimEnd() + "…";
+}
+
+// TWO LINES, and no more. A result is a picker entry: its job is to identify a
+// project, not to narrate it. `projects.client` carries internal commercial
+// notes on some jobs ("…this is his own house, and the fee is relationship
+// pricing. Referred by…") and rendering that made one row four times the height
+// of its neighbours and leaked the note into a picker. Line 1 is identity, line
+// 2 is client + phase/status. The long field is cut HERE, not merely hidden by
+// CSS overflow — text that is only visually clipped is still in the page, still
+// selectable and still copied. CSS ellipsis stays on top of it for narrow
+// widths. No title attribute either: a tooltip is still displaying it.
+function gsRowHtml(p, i) {
+  const n = gs.needle;
+  const line1 = p.is_overhead
+    ? gsMark(p.name, n)
+    : `<span class="n">${gsMark(p.number || "", n)}</span>` +
+      `<span class="sep"> — </span>${gsMark(p.name, n)}`;
+
+  const bits = [];
+  if (p.client) bits.push(`<span class="cl">${gsMark(gsSnippet(p.client, n), n)}</span>`);
+  if (p.phase) bits.push(`<span class="cl">${escapeHtml(p.phase)}</span>`);
+  if (p.status && p.status !== "active") {
+    bits.push(`<span class="cl">${escapeHtml(String(p.status).replace(/_/g, " "))}</span>`);
+  }
+  const line2 = bits.join(`<span class="sep"> · </span>`);
+
+  return `<div class="opt${i === gs.hi ? " on" : ""}" data-i="${i}" role="option"
+       aria-selected="${i === gs.hi}"><div class="ln1">${line1}</div>${
+    line2 ? `<div class="ln2">${line2}</div>` : ""}</div>`;
 }
 
 function gsRender() {
@@ -1449,18 +1798,17 @@ function gsRender() {
       ? "No project matches that." : "Type a number, an address or a client."}</div>`;
     return;
   }
-  box.innerHTML = gs.rows.map((p, i) => `
-    <div class="opt${i === gs.hi ? " on" : ""}" data-i="${i}" role="option"
-         aria-selected="${i === gs.hi}">${
-      p.is_overhead ? "" : `<span class="n">${escapeHtml(p.number || "")}</span>`
-    }${escapeHtml(p.name)}${
-      p.client ? `<span class="cl"> · ${escapeHtml(p.client)}</span>` : ""}</div>`).join("");
+  box.innerHTML = (gs.recent ? `<div class="grp">Recently opened</div>` : "") +
+    gs.rows.map(gsRowHtml).join("");
   const on = box.querySelector(".opt.on");
   if (on) on.scrollIntoView({ block: "nearest" });
 }
 
 function gsOpen() {
-  gs.rows = gsMatches($("gs-q").value);
+  const q = $("gs-q").value;
+  gs.needle = q.trim().toLowerCase();
+  gs.rows = gs.needle ? gsMatches(q) : gsRecentRows();
+  gs.recent = !gs.needle && gs.rows.length > 0;
   gsRender();
   $("gs-list").classList.remove("hidden");
   $("gs-q").setAttribute("aria-expanded", "true");
@@ -1477,15 +1825,63 @@ function gsChoose(i) {
   if (!p) return;
   $("gs-q").value = "";
   gsClose();
+  gsSheetClose();
   openProjectDrawer(p.id);
 }
 
+// ---- the phone sheet -------------------------------------------------------
+// At phone width the field is replaced by an icon and the icon opens the SAME
+// input, restyled by CSS into a full-screen sheet. The element never moves, so
+// no listener below has to be re-attached and none can go out of step.
+const gsPhone = () => window.matchMedia("(max-width: 620px)").matches;
+const gsSheetIsOpen = () => document.documentElement.classList.contains("gs-sheet");
+
+function gsSheetOpen() {
+  document.documentElement.classList.add("gs-sheet");
+  $("gs-toggle").setAttribute("aria-expanded", "true");
+  $("gs-q").focus();
+  gsOpen();
+}
+function gsSheetClose() {
+  if (!gsSheetIsOpen()) return;
+  document.documentElement.classList.remove("gs-sheet");
+  $("gs-toggle").setAttribute("aria-expanded", "false");
+  gsClose();
+  if (document.activeElement === $("gs-q")) $("gs-q").blur();
+}
+// Focus the search from a keyboard shortcut, opening the sheet first if that is
+// the shape it is currently in.
+function gsFocus() {
+  if (gsPhone() && !gsSheetIsOpen()) return gsSheetOpen();
+  $("gs-q").focus();
+  $("gs-q").select();
+  gsOpen();
+}
+
+$("gs-toggle").addEventListener("click", () => {
+  if (gsSheetIsOpen()) gsSheetClose(); else gsSheetOpen();
+});
+$("gs-sheet-close").addEventListener("click", gsSheetClose);
+// Rotating a phone to a tablet width would leave the sheet class on an element
+// the media query no longer restyles — a search box pinned invisibly over the
+// page. Drop it as soon as the breakpoint stops applying.
+window.addEventListener("resize", () => { if (!gsPhone()) gsSheetClose(); });
+
 $("gs-q").addEventListener("input", () => {
-  gs.rows = gsMatches($("gs-q").value);
-  gs.hi = gs.rows.length ? 0 : -1;
+  const q = $("gs-q").value;
+  gs.needle = q.trim().toLowerCase();
+  gs.rows = gs.needle ? gsMatches(q) : gsRecentRows();
+  gs.recent = !gs.needle && gs.rows.length > 0;
+  // Never pre-highlight the recents list: Enter on a box you have just emptied
+  // must not open whatever you happened to look at last.
+  gs.hi = gs.needle && gs.rows.length ? 0 : -1;
   if (!gs.open) gsOpen(); else gsRender();
 });
 $("gs-q").addEventListener("focus", gsOpen);
+// Clicking a box that ALREADY has the caret fires no focus event, so without
+// this the list stays shut — which is exactly what happens coming back from a
+// drawer that was opened out of the search and handed focus back.
+$("gs-q").addEventListener("click", gsOpen);
 $("gs-q").addEventListener("keydown", (e) => {
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
     e.preventDefault();
@@ -1495,17 +1891,44 @@ $("gs-q").addEventListener("keydown", (e) => {
   } else if (e.key === "Enter") {
     if (gs.open && gs.hi >= 0) { e.preventDefault(); gsChoose(gs.hi); }
   } else if (e.key === "Escape") {
-    // Consume it while the list is up, so one Escape closes the list and a
-    // second one closes the drawer rather than both going at once.
+    // The ladder: the results close first, then the sheet (on a phone), then
+    // the drawer. Each Escape does exactly one of them — consuming the event is
+    // what stops the document-level handler closing the drawer at the same time.
     if (gs.open) { e.preventDefault(); e.stopPropagation(); gsClose(); }
+    else if (gsSheetIsOpen()) { e.preventDefault(); e.stopPropagation(); gsSheetClose(); }
   }
 });
-$("gs-q").addEventListener("blur", () => setTimeout(gsClose, 120));
+$("gs-q").addEventListener("blur", () => setTimeout(() => {
+  // In sheet mode the list IS the sheet's content; hiding it on blur would
+  // leave a full-screen blank.
+  if (!gsSheetIsOpen()) gsClose();
+}, 120));
 $("gs-list").addEventListener("mousedown", (e) => {
   const opt = e.target.closest(".opt");
   if (!opt) return;
   e.preventDefault();                 // keep focus so blur cannot undo the pick
   gsChoose(Number(opt.dataset.i));
+});
+
+// Ctrl/Cmd+K anywhere, and "/" when you are not typing into something. The
+// second guard is the whole point: "/" is a legitimate character in a task
+// title, a note, a visit type and an address, so it must only be a shortcut
+// when no field has the caret.
+document.addEventListener("keydown", (e) => {
+  if ($("app").classList.contains("hidden")) return;      // still on the login screen
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && !e.altKey && (e.key === "k" || e.key === "K")) {
+    e.preventDefault();
+    return gsFocus();
+  }
+  if (e.key === "/" && !mod && !e.altKey) {
+    const el = document.activeElement;
+    const tag = el && el.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" ||
+        (el && el.isContentEditable)) return;
+    e.preventDefault();
+    gsFocus();
+  }
 });
 
 // ---------------------------------------------------------------- to do
@@ -1746,16 +2169,26 @@ function initTodo() {
   }
 }
 
+// Point a project filter <select> at a project, adding the option if the module
+// has no rows for it yet. Shared by every "open this module, filtered to this
+// job" path so they cannot drift apart.
+function pickProjectOption(sel, projectId) {
+  const id = String(projectId);
+  if (![...sel.options].some((o) => o.value === id)) {
+    sel.insertAdjacentHTML("beforeend",
+      `<option value="${escapeHtml(id)}">${escapeHtml(labelFor(id))}</option>`);
+  }
+  sel.value = id;
+}
+function setTodoProjectFilter(id) {
+  pickProjectOption($("td-filter-proj"), id);
+  todoBucketFilter = "";
+}
+
 // Filter the to-do list to a project and show it. Called from anywhere a
 // project name appears, so a name on screen is a way in rather than a label.
 function goToProject(projectId) {
-  const sel = $("td-filter-proj");
-  if (![...sel.options].some((o) => o.value === String(projectId))) {
-    sel.insertAdjacentHTML("beforeend",
-      `<option value="${projectId}">${escapeHtml(labelFor(projectId))}</option>`);
-  }
-  sel.value = String(projectId);
-  todoBucketFilter = "";
+  setTodoProjectFilter(projectId);
   showTab("todo");
   renderTodo();
 }
@@ -1763,8 +2196,12 @@ function goToProject(projectId) {
 function renderTodoProjectFilter() {
   const sel = $("td-filter-proj");
   const keep = sel.value;
-  const ids = [...new Set(tasks.map((t) => t.project_id).filter(Boolean))]
-    .map(String).sort((a, b) => labelFor(a).localeCompare(labelFor(b)));
+  const ids = [...new Set(tasks.map((t) => t.project_id).filter(Boolean))].map(String);
+  // A filter set from the project drawer has to survive this rebuild even when
+  // the job has no tasks — otherwise "filtered to that project" silently becomes
+  // "all projects" the moment the tab reloads.
+  if (keep && !ids.includes(keep)) ids.push(keep);
+  ids.sort((a, b) => labelFor(a).localeCompare(labelFor(b)));
   sel.innerHTML = `<option value="">All projects</option>` +
     ids.map((id) => `<option value="${id}">${escapeHtml(labelFor(id))}</option>`).join("");
   if (keep) sel.value = keep;
@@ -1866,9 +2303,34 @@ function ageCell(t) {
 // Capped, with the rest a click away. Uncapped this ran about thirty rows and
 // several thousand pixels, which pushed everything else on the page below the
 // fold. The list itself — what is in it and the order it is in — is unchanged.
-const OV_ATTENTION_MAX = 10;
+//
+// The cap is responsive because the fold is: ten rows is a third of a desktop
+// screen and three phone screens. Breakpoints match the CSS (620 phone, 900 is
+// where .two-col collapses).
+function ovAttentionMax() {
+  const w = window.innerWidth;
+  if (w <= 620) return 3;
+  if (w <= 900) return 5;
+  return 10;
+}
+
+// The last list rendered, so a resize can redraw at the new cap without going
+// back to the database. Nothing here is an input, so redrawing it cannot eat
+// anything half-typed.
+let ovLastOpen = [];
+let ovResizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(ovResizeTimer);
+  ovResizeTimer = setTimeout(() => {
+    if ($("panel-overview").classList.contains("hidden")) return;
+    if (!ovLastOpen.length) return;
+    renderOvAttention(ovLastOpen);
+  }, 150);
+});
 
 function renderOvAttention(open) {
+  ovLastOpen = open;
+  const OV_ATTENTION_MAX = ovAttentionMax();
   const rank = { overdue: 0, today: 1, this_week: 2 };
   const all = open.filter((t) => bucketOf(t) in rank)
     .sort((a, b) => (rank[bucketOf(a)] - rank[bucketOf(b)]) ||
@@ -2005,19 +2467,46 @@ let contractOf = {};       // project_id -> the confirmed signed proposal, if an
 function whoFilter() {
   return me.role === "admin" ? ($("h-who").value || "") : me.id;
 }
+// Read by personRows AND personVisits, so every panel on the tab — the stats,
+// the per-person card, Effort by project, additional services, the visit
+// worksheet and the margin table — agrees about which job is on screen.
+function hoursProjFilter() {
+  const sel = $("h-proj");
+  return sel ? sel.value : "";
+}
 function personRows() {
   const who = whoFilter();
-  return who ? hoursRows.filter((r) => r.employee_id === who) : hoursRows;
+  const proj = hoursProjFilter();
+  return hoursRows.filter((r) =>
+    (!who || r.employee_id === who) &&
+    (!proj || String(r.project_id) === proj));
 }
 function personVisits() {
   const who = whoFilter();
-  if (!who) return hoursVisits;
-  const p = personById(who);
+  const proj = hoursProjFilter();
+  const p = who ? personById(who) : null;
   const name = (p && p.full_name || "").toLowerCase();
   // attendee_id is null on the imported history, which is most of it, so fall
   // back to the name the log recorded.
-  return hoursVisits.filter((v) => v.attendee_id === who ||
-    (v.attendee_name || "").toLowerCase() === name);
+  return hoursVisits.filter((v) =>
+    (!proj || String(v.project_id) === proj) &&
+    (!who || v.attendee_id === who || (v.attendee_name || "").toLowerCase() === name));
+}
+
+function setHoursProjectFilter(id) { pickProjectOption($("h-proj"), id); }
+
+function renderHoursProjectFilter() {
+  const sel = $("h-proj");
+  const keep = sel.value;
+  const ids = [...new Set([
+    ...hoursRows.map((r) => r.project_id),
+    ...hoursVisits.map((v) => v.project_id),
+  ].filter(Boolean).map(String))];
+  if (keep && !ids.includes(keep)) ids.push(keep);   // see renderTodoProjectFilter
+  ids.sort((a, b) => labelFor(a).localeCompare(labelFor(b)));
+  sel.innerHTML = `<option value="">All projects</option>` +
+    ids.map((id) => `<option value="${id}">${escapeHtml(labelFor(id))}</option>`).join("");
+  if (keep) sel.value = keep;
 }
 function personById(id) {
   return people.find((x) => x.id === id) || (id === me.id ? me : null);
@@ -2104,6 +2593,10 @@ async function loadHours() {
 // Everything on the tab reads the same person filter, so they can never
 // disagree about who is being looked at.
 function renderHours() {
+  renderHoursProjectFilter();
+  const proj = hoursProjFilter();
+  $("hrs-scope").textContent = (me.role === "admin" ? "· firm-wide" : "· your hours only") +
+    (proj ? ` · ${labelFor(proj)} only` : "");
   renderHoursStats();
   renderPerson();
   renderHoursByProject();
@@ -2405,8 +2898,12 @@ function renderMargin() {
   if (whoFilter()) { $("margin-card").classList.add("hidden"); return; }
   $("margin-card").classList.remove("hidden");
 
+  // A PROJECT filter is not the person trap above: fee against effort stays a
+  // whole-project question, and narrowing to one project still asks it.
+  const onlyProj = hoursProjFilter();
   const byProject = {};
   for (const r of hoursRows) {
+    if (onlyProj && String(r.project_id) !== onlyProj) continue;
     const c = contractOf[r.project_id];
     if (!c || !c.design_fee) continue;
     const b = (byProject[r.project_id] ||= { engineer: 0, drafter: 0, contract: c });
@@ -2461,6 +2958,8 @@ function initHoursControls() {
     $(id).addEventListener("change", loadHours);
   }
   $("h-kind").addEventListener("change", renderHoursByProject);
+  // Re-render, not re-fetch: the range's rows are already loaded.
+  $("h-proj").addEventListener("change", renderHours);
   $("person-target").addEventListener("input", () => renderPersonDays(
     coverage(personRows(), hoursRange().from, hoursRange().to)));
 }
@@ -2488,11 +2987,26 @@ async function loadProposals() {
   renderProposals();
 }
 
+function setProposalProjectFilter(id) { pickProjectOption($("prop-filter-proj"), id); }
+
+function renderProposalProjectFilter() {
+  const sel = $("prop-filter-proj");
+  const keep = sel.value;
+  const ids = [...new Set(proposals.map((p) => p.project_id).filter(Boolean).map(String))];
+  if (keep && !ids.includes(keep)) ids.push(keep);   // see renderTodoProjectFilter
+  ids.sort((a, b) => labelFor(a).localeCompare(labelFor(b)));
+  sel.innerHTML = `<option value="">Any project</option>` +
+    ids.map((id) => `<option value="${id}">${escapeHtml(labelFor(id))}</option>`).join("");
+  if (keep) sel.value = keep;
+}
+
 function visibleProposals() {
   const st = $("prop-filter-status").value;
   const q = $("prop-search").value.trim().toLowerCase();
+  const proj = $("prop-filter-proj").value;
   return proposals.filter((p) =>
     (!st || p.status === st) &&
+    (!proj || String(p.project_id) === proj) &&
     (!q || `${p.number} ${p.title} ${p.client_name || ""}`.toLowerCase().includes(q)));
 }
 
@@ -2514,6 +3028,7 @@ function renderProposalStats() {
 }
 
 function renderProposals() {
+  renderProposalProjectFilter();
   const rows = visibleProposals();
   const body = $("prop-body");
   body.innerHTML = "";
@@ -2544,6 +3059,7 @@ function renderProposals() {
 }
 
 $("prop-filter-status").addEventListener("change", renderProposals);
+$("prop-filter-proj").addEventListener("change", renderProposals);
 $("prop-search").addEventListener("input", renderProposals);
 
 // --------------------------------------------------------- site visits
@@ -2557,6 +3073,16 @@ let visits = [];
 const OUTCOME_LABEL = {
   pending: "Not yet reported", passed: "No corrections noted",
   failed: "Corrections required", na: "Informational / n/a",
+};
+// The same four outcomes, short enough for the inline <select> in the history
+// table — which is about 130px wide and was rendering "No correctior…". The
+// STORED values are untouched (a CHECK constraint owns them), and every place a
+// visit outcome reaches a person outside this table — the project hub, the stat
+// tiles, the add-visit form, anything that ends up in correspondence — keeps the
+// full OUTCOME_LABEL wording.
+const OUTCOME_SHORT = {
+  pending: "Not reported", passed: "No corrections",
+  failed: "Corrections", na: "Informational",
 };
 // HD observes; it does not inspect. This list is the vocabulary that ends up in
 // a visit record and, from there, one copy-paste from an invoice description.
@@ -2612,11 +3138,14 @@ function visibleVisits() {
       (v.attendee_name || "").toLowerCase() === (me.full_name || "").toLowerCase()));
 }
 
+function setVisitProjectFilter(id) { pickProjectOption($("v-filter-proj"), id); }
+
 function renderVisitFilters() {
   const sel = $("v-filter-proj");
   const keep = sel.value;
-  const ids = [...new Set(visits.map((v) => String(v.project_id)))]
-    .sort((a, b) => labelFor(a).localeCompare(labelFor(b)));
+  const ids = [...new Set(visits.map((v) => String(v.project_id)))];
+  if (keep && !ids.includes(keep)) ids.push(keep);   // see renderTodoProjectFilter
+  ids.sort((a, b) => labelFor(a).localeCompare(labelFor(b)));
   sel.innerHTML = `<option value="">All projects</option>` +
     ids.map((id) => `<option value="${id}">${escapeHtml(labelFor(id))}</option>`).join("");
   if (keep) sel.value = keep;
@@ -2652,6 +3181,12 @@ function renderVisits() {
   const rows = visibleVisits();
   const body = $("visits-body");
   body.innerHTML = "";
+  // Same honesty rule as the letters board: with a filter on, "none recorded"
+  // is a claim about the firm that the filtered view cannot support.
+  const onlyProj = $("v-filter-proj").value;
+  $("visits-empty").textContent = onlyProj
+    ? `No site visits recorded on ${labelFor(onlyProj)}.`
+    : "No site visits recorded.";
   $("visits-empty").classList.toggle("hidden", rows.length > 0);
   $("visits-table").classList.toggle("hidden", rows.length === 0);
 
@@ -2690,9 +3225,11 @@ function renderVisits() {
       <td>${escapeHtml(v.visit_type)}${
         v.notes ? `<div class="small muted">${escapeHtml(v.notes)}</div>` : ""}</td>
       <td class="small">${escapeHtml(v.attendee_name)}</td>
-      <td><select data-outcome="${v.id}" style="padding:3px 6px;font-size:13px">
-            ${Object.entries(OUTCOME_LABEL).map(([k, l]) =>
-              `<option value="${k}"${k === v.outcome ? " selected" : ""}>${l}</option>`).join("")}
+      <td><select data-outcome="${v.id}" style="padding:3px 6px;font-size:13px"
+                  title="${escapeHtml(OUTCOME_LABEL[v.outcome] || v.outcome)}">
+            ${Object.entries(OUTCOME_SHORT).map(([k, l]) =>
+              `<option value="${k}"${k === v.outcome ? " selected" : ""} title="${
+                escapeHtml(OUTCOME_LABEL[k])}">${escapeHtml(l)}</option>`).join("")}
           </select></td>
       <td class="num small">${travel}</td>
       <td class="num small admin-only-col${me.role === "admin" ? "" : " hidden"}">${rate}</td>
@@ -2928,10 +3465,36 @@ function loadLettersTab() {
   loadLetters().then(() => { renderLetterBoard(); renderLetterStatus(); });
 }
 
+// Static control: attached once, never inside a render.
+$("lt-filter-proj").addEventListener("change", renderLetterBoard);
+
+function setLetterProjectFilter(id) { pickProjectOption($("lt-filter-proj"), id); }
+
+function renderLetterProjectFilter() {
+  const sel = $("lt-filter-proj");
+  const keep = sel.value;
+  const ids = [...new Set(letters.map((l) => String(l.project_id)).filter((x) => x && x !== "null"))];
+  if (keep && !ids.includes(keep)) ids.push(keep);   // see renderTodoProjectFilter
+  ids.sort((a, b) => labelFor(a).localeCompare(labelFor(b)));
+  sel.innerHTML = `<option value="">All projects</option>` +
+    ids.map((id) => `<option value="${id}">${escapeHtml(labelFor(id))}</option>`).join("");
+  if (keep) sel.value = keep;
+}
+
 function renderLetterBoard() {
   const body = $("letters-body");
-  const rows = [...letters].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
-  $("lt-count").textContent = rows.length ? `· ${rows.length} on record` : "";
+  renderLetterProjectFilter();
+  const only = $("lt-filter-proj").value;
+  const all = [...letters].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
+  const rows = only ? all.filter((l) => String(l.project_id) === only) : all;
+  $("lt-count").textContent = all.length
+    ? (rows.length === all.length ? `· ${all.length} on record` : `· ${rows.length} of ${all.length}`)
+    : "";
+  // "No letters yet" is a different claim from "none on this job" — and with a
+  // filter on, the first one is false.
+  $("letters-empty").textContent = only
+    ? `No letters on ${labelFor(only)}.`
+    : "No letters yet — use the Letter column in the Site visits log.";
   $("letters-empty").classList.toggle("hidden", rows.length > 0);
   $("letters-table").classList.toggle("hidden", rows.length === 0);
   body.innerHTML = "";

@@ -125,6 +125,7 @@
     color: var(--band-txt, #A8C4C9); margin-bottom: 3px;
   }
   header.app .meta .v { font-family: var(--mono); font-size: 13px; font-weight: 600; }
+  #who-short { display: none; }
   header.app button {
     background: transparent; color: #fff; border: 1px solid rgba(255,255,255,.35);
     border-radius: 0; padding: 6px 12px; font-size: 11px;
@@ -450,9 +451,50 @@
   #gs-q:focus { outline: 2px solid #fff; outline-offset: -1px; }
   /* Wider than the field so a full address is readable, and pinned to its
      right edge so it cannot push the page sideways. */
-  #gs-list { left: auto; right: 0; width: max(100%, 300px); max-width: 92vw; }
-  #gs-list .opt .cl { color: var(--muted); font-size: 12px; }
-  #gs-list .opt.on .cl { color: rgba(255,255,255,.85); }
+  #gs-list { left: auto; right: 0; width: max(100%, 340px); max-width: 92vw; }
+
+  /* ⚠️ EVERY colour in the result panel is stated outright. The list hangs
+     inside header.app, which sets `color:#fff` for the dark band, and the panel
+     itself is paper-coloured — so anything that inherits arrives as white text
+     on cream and is invisible. That shipped: only the keyboard-selected row
+     (dark background) could be read. Inheritance is the bug; do not rely on it.
+     tools\test\contrast.mjs measures all four states now. */
+  #gs-list { background: var(--card); color: var(--ink); }
+  #gs-list .opt { color: var(--ink); }
+  #gs-list .opt:hover { background: var(--grey-bg); color: var(--ink); }
+  #gs-list .opt.on { background: var(--teal); color: #fff; }
+  #gs-list .opt .n { color: var(--muted); opacity: 1; margin-right: 0; }
+  /* Full white, not a 92% wash: over --teal in the DARK theme a 92% white sits
+     at 4.47:1 and AA wants 4.5. The selected row is already distinguished by
+     its background; it does not need a second, marginal, cue. */
+  #gs-list .opt.on .n { color: #fff; opacity: 1; }
+  #gs-list .opt .cl { color: var(--muted); }
+  #gs-list .opt.on .cl { color: #fff; }
+  #gs-list .none { color: var(--muted); }
+  #gs-list .grp { color: var(--muted); background: var(--grey-bg); }
+
+  /* Two lines and no more. A row is a picker entry, not a place to read the
+     job's story: `projects.client` holds internal commercial narrative on some
+     jobs ("…this is his own house, and the fee is relationship pricing…") and
+     one of those made a row four times the height of its neighbours. Matching
+     still runs over the whole string; the display is clipped. No title
+     attribute either — a tooltip is still displaying it. */
+  #gs-list .opt { padding: 6px 10px; line-height: 1.35; }
+  #gs-list .opt .ln1, #gs-list .opt .ln2 {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+  }
+  #gs-list .opt .ln1 { font-size: 14px; }
+  #gs-list .opt .ln2 { font-size: 12px; }
+  #gs-list .opt .ln2 .sep { opacity: .6; }
+  /* The matched substring. A background rather than colour alone, and a DARK
+     wash on the selected row — a light wash there dropped white text to 3.5:1. */
+  #gs-list mark { background: var(--warn-bg); color: var(--ink); font-weight: 700; }
+  #gs-list .opt.on mark { background: rgba(0,0,0,.25); color: #fff; }
+
+  /* The phone affordance: the field collapses to this button and the button
+     opens a full-screen sheet. Hidden at every other width. */
+  header.app .gs-toggle-wrap { display: none; }
+  #gs-sheet-close { display: none; }
 
   /* Project drawer. A slide-over, not a tab: the modules are joined by the
      project number, and this is the one place that gathers a job — tasks,
@@ -475,8 +517,34 @@
     color: var(--band-txt, #A8C4C9); margin-bottom: 3px;
   }
   #proj-drawer .pd-head h2 { font-size: 17px; overflow-wrap: anywhere; }
-  #pd-sub { font-size: 12px; color: var(--band-txt, #A8C4C9); margin-top: 5px; }
+  /* One restrained identity line — client · phase · status — not a row of
+     tiles. It sits on the dark head band, so it states its colour outright for
+     the same reason the search list does. */
+  #pd-sub {
+    font-size: 12px; color: var(--band-txt, #A8C4C9); margin-top: 5px;
+    overflow-wrap: anywhere;
+  }
+  #pd-sub .sep { opacity: .6; padding: 0 2px; }
   #pd-sub .tag { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.4); color: #fff; }
+
+  /* Quick actions. OUTSIDE #pd-body on purpose: the body scrolls and these must
+     not scroll away on a long job. */
+  .pd-actions {
+    flex: none; display: flex; flex-wrap: wrap; gap: 6px;
+    padding: 9px 14px; background: var(--grey-bg);
+    border-bottom: 1px solid var(--line-strong);
+  }
+  .pd-actions:empty { display: none; }
+  .pd-actions button {
+    background: var(--card); color: var(--ink); border: 1px solid var(--line-strong);
+    border-radius: 0; padding: 5px 10px; font-size: 11px;
+    letter-spacing: .08em; text-transform: uppercase; font-weight: 700;
+  }
+  .pd-actions button:hover { background: var(--teal); color: #fff; border-color: var(--teal); }
+  .pd-actions button:focus-visible { outline: 2px solid var(--teal-lt); outline-offset: 1px; }
+  .pd-actions button[disabled] { opacity: .5; cursor: not-allowed; }
+  .pd-actions button[disabled]:hover { background: var(--card); color: var(--ink);
+    border-color: var(--line-strong); }
   #pd-close {
     margin-left: auto; flex: none; width: 30px; height: 30px; padding: 0;
     background: transparent; color: #fff; border: 1px solid rgba(255,255,255,.35);
@@ -517,14 +585,98 @@
   .pd-none, .pd-more { font-size: 13px; color: var(--muted); padding: 8px 0 0; }
   .pd-foot { font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 10px; }
   .pd-foot .path { font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; }
+  /* The count beside a section heading is the way into that module, filtered to
+     this job. Styled as a control so it does not read as decoration. */
+  .pd-sec > .gh .cnt {
+    background: none; border: 0; padding: 0; margin: 0; font: inherit;
+    color: var(--teal-lt); cursor: pointer; text-decoration: none;
+    letter-spacing: inherit;
+  }
+  .pd-sec > .gh .cnt:hover { text-decoration: underline; }
+  .pd-sec > .gh .cnt:focus-visible { outline: 2px solid var(--teal-lt); outline-offset: 1px; }
+  .pd-sec > .gh .cnt[disabled] { color: var(--muted); cursor: default; text-decoration: none; }
+  /* Confirming a proposal link ARMS a contracted per-visit rate, so its control
+     is not a quiet inline link. */
+  .pd-resolve { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 0 0; }
+  .pd-resolve button { border-radius: 0; padding: 4px 9px; font-size: 12px; }
+  .pd-resolve .arm {
+    background: var(--warn-bg); color: var(--ink);
+    border: 1px solid var(--warn); font-weight: 700;
+  }
+  .pd-resolve .arm:hover { background: var(--warn); color: #fff; }
+  .pd-resolve .drop {
+    background: transparent; color: var(--muted); border: 1px solid var(--line-strong);
+  }
+  .pd-resolve .drop:hover { color: var(--err); border-color: var(--err); }
 
   @media (max-width: 620px) {
-    /* Full-width sheet on a phone, and the search drops to its own compact
-       line rather than squeezing the identity blocks. */
-    #proj-drawer { width: 100vw; border-left: 0; }
-    header.app .hdr-search { flex: 1 1 100%; padding: 10px 0 0; border-left: 0; }
-    header.app .hdr-search .k { display: none; }
-    #gs-list { width: 100%; max-width: none; }
+    /* FULL-SCREEN sheet on a phone — inset:0, not just full width, so the drawer
+       owns the screen rather than sitting in a column beside a scrim. */
+    #proj-drawer { inset: 0; width: 100vw; border-left: 0; }
+    .pd-actions { padding: 8px 10px; }
+    #pd-body { padding: 10px; }
+
+    /* The masthead stacked firm identity, sheet name, signed-in user, a
+       full-width search field, sign-out and eight tabs before any content —
+       the whole first screen. One row, no wrapping, no furniture: the eyebrows,
+       the strapline and the sheet name are all things you learn once. */
+    header.app {
+      padding: 8px 12px; flex-wrap: nowrap; align-items: center; gap: 0;
+    }
+    header.app .firm { min-width: 0; flex: 1 1 auto; overflow: hidden; }
+    header.app .name {
+      font-size: 14px; letter-spacing: 0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    header.app .eyebrow, header.app .sub { display: none; }
+    header.app #hdr-sheet { display: none; }
+    header.app .meta {
+      flex: none; align-self: auto; padding: 0 0 0 10px; border-left: 0;
+    }
+    header.app .meta:last-child { padding-right: 46px; }
+    header.app .meta .k { display: none; }
+    header.app .meta .v {
+      font-size: 11px; max-width: 92px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #who { display: none; }
+    #who-short { display: block; font-size: 12px; max-width: none; }
+    header.app button { padding: 5px 7px; font-size: 10px; letter-spacing: .06em; }
+    #themeBtn { top: 7px; right: 8px; width: 30px; height: 30px; font-size: 14px; }
+    nav.tabs .tab { padding: 9px 11px; font-size: 10px; letter-spacing: .08em; }
+
+    /* Collapsed: the field is gone and a button stands in for it. */
+    header.app .hdr-search { display: none; }
+    header.app .gs-toggle-wrap { display: block; }
+
+    /* Opened: the same input, the same listeners, promoted to a full-screen
+       sheet. Moving the element would have meant re-wiring every listener on
+       it; restyling it in place cannot go out of step. */
+    html.gs-sheet header.app .hdr-search {
+      display: flex; flex-direction: column; gap: 8px;
+      position: fixed; inset: 0; z-index: 80;
+      background: var(--teal-dk); color: #fff;
+      padding: 14px 14px 0; border-left: 0; border-bottom: 3px solid var(--clay);
+    }
+    html.gs-sheet header.app .hdr-search .k { display: block; margin: 0; }
+    html.gs-sheet #gs-q { font-size: 16px; padding: 10px; }  /* 16px: iOS will not zoom */
+    html.gs-sheet #gs-wrap { position: static; }
+    /* Sized to its content — GS_MAX caps the list at 8 rows — but never taller
+       than the sheet it lives in. `flex: 1` would do nothing here: the list is
+       a child of #gs-wrap, not of the flex container. */
+    html.gs-sheet #gs-list {
+      position: static; width: 100%; max-width: none; border-top: 1px solid var(--line-strong);
+      max-height: calc(100vh - 150px); overflow-y: auto; box-shadow: none;
+    }
+    html.gs-sheet #gs-sheet-close {
+      display: block; align-self: flex-start; order: -1;
+      background: transparent; color: #fff; border: 1px solid rgba(255,255,255,.35);
+      border-radius: 0; padding: 6px 12px; font-size: 11px;
+      letter-spacing: .1em; text-transform: uppercase;
+    }
+    html.gs-sheet #gs-sheet-close:hover { background: rgba(255,255,255,.14); }
+    /* The sheet is over everything, including the theme button. */
+    html.gs-sheet #themeBtn { display: none; }
 
     main { padding: 10px; }
     .card { padding: 12px; }
@@ -605,18 +757,25 @@
       <div class="name">HIGGINS-DESIGNS, PC</div>
       <div class="sub">Structural Engineering · Austin TX · TX Firm F-23989</div>
     </div>
-    <div class="meta">
+    <div class="meta" id="hdr-sheet">
       <div class="k">Sheet</div>
       <div class="v">TIME &amp; SITE VISITS</div>
     </div>
     <div class="meta">
       <div class="k">Signed in</div>
       <div class="v" id="who"></div>
+      <!-- Initials, phone only (CSS). "Ben Higgins · admin" is 140px of a
+           390px masthead; "BH" says the same thing to the one person reading
+           it, and gives the firm name room to not be an ellipsis. -->
+      <div class="v" id="who-short" title="Signed in"></div>
     </div>
     <!-- Global project search. The project number is the join key on every tab,
          so this is the way in that did not exist: number, address or client,
          then the drawer. It never takes focus on load. -->
-    <div class="meta hdr-search">
+    <div class="meta hdr-search" id="hdr-search">
+      <!-- Only rendered as a sheet on a phone; the same input either way, so no
+           listener has to be re-wired when it changes shape. -->
+      <button id="gs-sheet-close" type="button">Close</button>
       <div class="k"><label for="gs-q">Find a project</label></div>
       <div class="combo" id="gs-wrap">
         <input id="gs-q" type="search" autocomplete="off" role="combobox"
@@ -625,6 +784,12 @@
         <div class="combo-list hidden" id="gs-list" role="listbox"
              aria-label="Project search results"></div>
       </div>
+    </div>
+    <!-- Phone only (CSS). The field costs a whole line in a masthead that
+         already eats the first screen, so it collapses to this. -->
+    <div class="meta gs-toggle-wrap" style="border-left:0">
+      <button id="gs-toggle" type="button" aria-expanded="false"
+              aria-label="Find a project" title="Find a project">&#9906; Find</button>
     </div>
     <div class="meta" style="border-left:0">
       <button id="signout">Sign out</button>
@@ -994,7 +1159,11 @@
          009_letters\1 - For Review. -->
     <section id="panel-letters" class="hidden">
       <div class="card">
-        <h2>Letters <span class="muted" id="lt-count"></span></h2>
+        <h2>Letters <span class="muted" id="lt-count"></span>
+          <!-- Populated from the letters on record, so the project drawer's
+               "Letters N" heading has somewhere real to land. -->
+          <select id="lt-filter-proj" style="width:auto;margin-left:8px;padding:4px 8px"></select>
+        </h2>
         <div class="grid-wrap">
           <table id="letters-table">
             <thead>
@@ -1101,6 +1270,15 @@
           <div class="field hidden" id="h-who-field">
             <label for="h-who">Who</label>
             <select id="h-who"></select>
+          </div>
+          <!-- Every panel on this tab reads it (personRows/personVisits), so the
+               whole tab agrees about which job is being looked at. This is where
+               the project drawer's "Time N" heading lands: the Time tab is a
+               personal timesheet, this is the module that reports a job's
+               hours. -->
+          <div class="field">
+            <label for="h-proj">Project</label>
+            <select id="h-proj"></select>
           </div>
         </div>
         <div class="stats" id="hrs-stats" style="margin-top:14px"></div>
@@ -1281,6 +1459,10 @@
           </select>
           <input id="prop-search" type="text" placeholder="search address or client"
                  style="width:auto;margin-left:8px;padding:4px 8px">
+          <!-- Filters on the LINKED PROJECT, which the free-text box cannot do:
+               a proposal number and a project number are two different
+               sequences (P26-083 is project 26075). -->
+          <select id="prop-filter-proj" style="width:auto;margin-left:8px;padding:4px 8px"></select>
         </h2>
         <div class="grid-wrap">
           <table id="prop-table">
@@ -1362,6 +1544,10 @@
       </div>
       <button id="pd-close" title="Close (Esc)" aria-label="Close">&times;</button>
     </div>
+    <!-- Outside #pd-body so it stays put while the body scrolls. Rendered by
+         pdRender; "Draft letter" is admin-only and is simply not emitted for
+         anyone else. -->
+    <div class="pd-actions" id="pd-actions"></div>
     <div id="pd-body">
       <div class="pd-facts" id="pd-facts"></div>
       <div id="pd-sections"></div>
