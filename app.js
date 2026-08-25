@@ -2383,14 +2383,23 @@ function initVisitForm() {
 // status/paths back onto the row. Admin-only end to end (RLS).
 
 // The composer's checkboxes — mirror tools/letter-templates.mjs SCOPES.
-// Piers is deliberately separate from trenching/excavations (Ben, 8/24).
+// Piers is deliberately separate from trenching/excavations, and the framing
+// family carries all three variations of the old letter menu (Ben, 8/24).
+// Each scope's items are the sub-checkboxes whose checked subset the letter's
+// sentence enumerates.
 const LETTER_SCOPES = {
-  foundation: "Foundation pre-pour",
-  trenching: "Trenching / excavations",
-  piers: "Piers",
-  pool: "Pool shell",
-  framing: "Framing",
-  sheathing: "Sheathing & nailing",
+  foundation: { label: "Foundation pre-pour", items: ["rebar mat placement",
+    "beam widths and depths", "slab thickness", "reinforcement", "rebar location"] },
+  trenching: { label: "Trenching / excavations", items: ["grade beam widths",
+    "grade beam depths", "bearing conditions"] },
+  piers: { label: "Piers", items: ["pier depths", "pier diameters", "pier reinforcement"] },
+  pool: { label: "Pool shell", items: ["rebar mat placement", "beam width and depth",
+    "shell thickness", "pier depth and reinforcement", "rebar location"] },
+  framing: { label: "Wood framing", items: ["wall framing", "floor framing",
+    "roof framing", "headers and beams", "blocking and connections"] },
+  steel: { label: "Steel framing", items: ["steel framing members", "connections and bolting"] },
+  sheathing: { label: "Sheathing & nailing", items: ["wall sheathing", "roof sheathing",
+    "nailing size and spacing"] },
 };
 
 // DB status 'issued' displays as "sent" — Ben's word for it. The Sent button
@@ -2410,7 +2419,8 @@ function guessScopes(v) {
   if (/pier/.test(t)) s.add("piers");
   if (/pool|gunite|shotcrete/.test(t)) s.add("pool");
   if (/sheathing|nailing/.test(t)) s.add("sheathing");
-  if (/framing|joist|ledger|deck/.test(t)) s.add("framing");
+  if (/steel/.test(t)) s.add("steel");
+  else if (/framing|joist|ledger|deck/.test(t)) s.add("framing");
   if (!s.size && /pour|foundation|slab|rebar/.test(t)) s.add("foundation");
   return [...s];
 }
@@ -2423,9 +2433,9 @@ async function loadLetters() {
   if (me.role !== "admin") return; // RLS denies it anyway; don't even ask
   const { data, error } = await sb
     .from("letters")
-    .select(`id, project_id, site_visit_id, letter_type, scopes, performed_by,
-             status, messages, spec_path, output_path, pages, error,
-             created_at, updated_at`)
+    .select(`id, project_id, site_visit_id, letter_type, scopes, scope_items,
+             performed_by, status, messages, spec_path, output_path, pages,
+             error, created_at, updated_at`)
     .order("id", { ascending: true });
   if (error) return fail("Loading letters", error);
   letters = data || [];
@@ -2438,7 +2448,7 @@ async function loadLetters() {
 function letterScopeLabel(lt) {
   const s = Array.isArray(lt.scopes) ? lt.scopes : [];
   if (!s.length) return "General letter";
-  return s.map((k) => LETTER_SCOPES[k] || k).join(" + ");
+  return s.map((k) => LETTER_SCOPES[k]?.label || k).join(" + ");
 }
 
 function loadLettersTab() {
@@ -2544,9 +2554,28 @@ function syncComposerInputs(lt, v) {
     ? lt.scopes : guessScopes(v));
   // A stored scope this build doesn't know must still display honestly.
   const keys = [...new Set([...Object.keys(LETTER_SCOPES), ...want])];
-  $("lt-scopes").innerHTML = keys.map((k) => `
-    <label><input type="checkbox" data-ltscope="${escapeHtml(k)}"${
-      want.has(k) ? " checked" : ""}> ${escapeHtml(LETTER_SCOPES[k] || k)}</label>`).join("");
+  const stored = (lt && lt.scope_items && typeof lt.scope_items === "object") ? lt.scope_items : {};
+  $("lt-scopes").innerHTML = keys.map((k) => {
+    const cfg = LETTER_SCOPES[k] || { label: k, items: [] };
+    const on = want.has(k);
+    // Items default to ALL checked; a stored subset restores exactly.
+    const picked = new Set(Array.isArray(stored[k]) && stored[k].length ? stored[k] : cfg.items);
+    return `
+    <div>
+      <label><input type="checkbox" data-ltscope="${escapeHtml(k)}"${
+        on ? " checked" : ""}> <b>${escapeHtml(cfg.label)}</b></label>
+      ${cfg.items.length ? `<div class="lt-items${on ? "" : " hidden"}" data-ltitems="${escapeHtml(k)}">
+        ${cfg.items.map((i) => `<label><input type="checkbox" data-ltitem="${escapeHtml(k)}"
+          value="${escapeHtml(i)}"${picked.has(i) ? " checked" : ""}> ${escapeHtml(i)}</label>`).join("")}
+      </div>` : ""}
+    </div>`;
+  }).join("");
+  // Checking a scope reveals its items; unchecking hides them (state kept).
+  document.querySelectorAll("#lt-scopes [data-ltscope]").forEach((c) =>
+    c.addEventListener("change", () => {
+      const items = document.querySelector(`#lt-scopes [data-ltitems="${c.dataset.ltscope}"]`);
+      if (items) items.classList.toggle("hidden", !c.checked);
+    }));
 
   // Performed by: the roster, plus whatever name the visit or the letter
   // already carries (historical imports have attendees who are not users).
@@ -2625,6 +2654,19 @@ $("lt-go").addEventListener("click", async () => {
   if (!scopes.length && !text) {
     return toast("Check what was observed, or describe it in the edits box.", "err");
   }
+  // Item subsets: only stored when Ben unchecked something; a checked scope
+  // with NOTHING under it is a mistake, not a letter.
+  const scopeItems = {};
+  for (const k of scopes) {
+    const cfg = LETTER_SCOPES[k];
+    if (!cfg || !cfg.items.length) continue;
+    const picked = [...document.querySelectorAll(`#lt-scopes [data-ltitem="${k}"]:checked`)]
+      .map((c) => c.value);
+    if (!picked.length) {
+      return toast(`Check at least one item under ${cfg.label}, or uncheck it.`, "err");
+    }
+    if (picked.length < cfg.items.length) scopeItems[k] = picked;
+  }
   // The board shows this; the runner works from scopes.
   const type = scopes.length === 0 ? "general" : scopes.length === 1 ? scopes[0] : "multi";
   const lt = lettersByVisit[v.id] || null;
@@ -2644,6 +2686,7 @@ $("lt-go").addEventListener("click", async () => {
         site_visit_id: v.id,
         letter_type: type,
         scopes,
+        scope_items: scopeItems,
         performed_by: performedBy || null,
         status: "queued",
         messages,
@@ -2659,6 +2702,7 @@ $("lt-go").addEventListener("click", async () => {
       const { data, error } = await sb.rpc("queue_letter", {
         p_letter_id: lt.id, p_text: text || null, p_letter_type: type,
         p_scopes: scopes, p_performed_by: performedBy || null,
+        p_scope_items: scopeItems,
       });
       if (error) return fail("Re-queuing the letter", error);
       if (!data || !data.length)
