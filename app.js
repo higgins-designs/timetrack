@@ -3579,7 +3579,12 @@ function renderLetterBoard() {
       <td>${letterStatusHtml(lt)}</td>
       <td class="num small">${lt.pages ?? ""}</td>
       <td>${file}</td>
-      <td class="right">${reviseButtonHtml(lt)}<button class="btn ghost sm" data-ltdel="${
+      <td class="right">${
+        lt.status === "draft"
+          ? `<button class="btn ghost sm" data-ltsent="${lt.id}"
+               title="Mark this letter sent. Only after it has actually gone to the client — the file moves to 2 - Sent and this is final.">Sent</button> `
+          : ""
+      }${reviseButtonHtml(lt)}<button class="btn ghost sm" data-ltdel="${
         lt.id}">Delete</button></td>`;
     body.appendChild(tr);
   }
@@ -3587,6 +3592,8 @@ function renderLetterBoard() {
     b.addEventListener("click", () => {
       if (b.dataset.ltopen) openLetterComposer(Number(b.dataset.ltopen));
     }));
+  body.querySelectorAll("[data-ltsent]").forEach((b) =>
+    b.addEventListener("click", () => markLetterIssued(Number(b.dataset.ltsent), { confirmFirst: true })));
   body.querySelectorAll("[data-ltdel]").forEach((b) =>
     b.addEventListener("click", () => deleteLetter(Number(b.dataset.ltdel))));
 }
@@ -3892,19 +3899,35 @@ $("lt-go").addEventListener("click", async () => {
   }
 });
 
-$("lt-issued").addEventListener("click", async () => {
-  if (letterVisitId == null) return;
-  const lt = lettersByVisit[letterVisitId];
+// Marking a letter sent is reachable from the board as well as the composer,
+// so the update lives here once. The status guard stays in the WHERE clause,
+// not just the caller: two tabs can disagree about what is still a draft.
+// confirmFirst is on for the board button and off for the composer. On the
+// board you are looking at a list and the wrong row is one pixel away; in the
+// composer you are looking at the letter itself, with its PDF path on screen.
+async function markLetterIssued(id, { confirmFirst = false } = {}) {
+  const lt = letters.find((l) => l.id === id);
   if (!lt || lt.status !== "draft") return;
+  if (confirmFirst && !confirm(
+    "Mark this letter sent?\n\nOnly do this once it has actually gone to the client. " +
+    "The file moves to \"2 - Sent\", and after this a revision becomes a NEW letter " +
+    "rather than a change to this one."
+  )) return;
   const { data, error } = await sb.from("letters")
-    .update({ status: "issued" }).eq("id", lt.id).eq("status", "draft").select("id");
+    .update({ status: "issued" }).eq("id", id).eq("status", "draft").select("id");
   if (error) return fail("Marking the letter sent", error);
-  if (!data || !data.length) return toast("That change did not save.", "warn");
+  if (!data || !data.length) return toast("That change did not save — it is no longer a draft.", "warn");
   await loadLetters();
   renderLetterBoard();
   renderVisits();
   renderLetterStatus();
   toast("Marked sent — the office machine moves the file to 2 - Sent.");
+}
+
+$("lt-issued").addEventListener("click", () => {
+  if (letterVisitId == null) return;
+  const lt = lettersByVisit[letterVisitId];
+  if (lt) markLetterIssued(lt.id);
 });
 
 // ---------------------------------------------------------------- admin
