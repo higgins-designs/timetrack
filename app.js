@@ -4178,11 +4178,18 @@ function setDrawingProjectFilter(id) { pickProjectOption($("da-filter-proj"), id
 function renderDrawingProjectFilter() {
   const sel = $("da-filter-proj");
   const keep = sel.value;
-  const ids = [...new Set(drawingJobs.map((j) => String(j.project_id)).filter((x) => x && x !== "null"))];
+  // EVERY project, not just those with jobs. This select also scopes the
+  // Design manifest, and decision-class facts (Note "A" embedments, f'c, slab
+  // thickness) are UI-entry only — so listing only projects that already have a
+  // drawing job made it impossible to enter the values a human must supply
+  // before the first job, and left the card inert on a fresh install.
+  const withJobs = new Set(drawingJobs.map((j) => String(j.project_id)).filter((x) => x && x !== "null"));
+  const ids = [...new Set([...withJobs, ...projects.map((p) => String(p.id))])];
   if (keep && !ids.includes(keep)) ids.push(keep);   // see renderTodoProjectFilter
   ids.sort((a, b) => labelFor(a).localeCompare(labelFor(b)));
   sel.innerHTML = `<option value="">All projects</option>` +
-    ids.map((id) => `<option value="${id}">${escapeHtml(labelFor(id))}</option>`).join("");
+    ids.map((id) => `<option value="${id}"${withJobs.has(id) ? "" : ' data-nojobs="1"'}>${
+      escapeHtml(labelFor(id))}</option>`).join("");
   if (keep) sel.value = keep;
 }
 
