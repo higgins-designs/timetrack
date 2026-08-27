@@ -189,7 +189,7 @@ async function boot(uid) {
   bootedUid = uid;                       // set first: blocks re-entrant boots
   const { data: emp, error } = await sb
     .from("employees")
-    .select("id, email, full_name, role, active, rate_class")
+    .select("id, email, full_name, role, active, rate_class, can_design")
     .eq("id", uid)                       // admins can read everyone; this view is personal
     .maybeSingle();
 
@@ -4952,7 +4952,7 @@ let assignFor = null;
 async function loadPeople() {
   const { data, error } = await sb
     .from("employees")
-    .select("id, email, full_name, role, active, rate_class")
+    .select("id, email, full_name, role, active, rate_class, can_design")
     .order("full_name");
   if (error) return fail("Loading people", error);
   people = data || [];
