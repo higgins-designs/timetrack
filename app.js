@@ -4255,9 +4255,17 @@ function renderDrawingDetails(j) {
     }
   }
   if (j.kind === "check" || j.kind === "compare") {
-    const engBits = Object.entries(r.engines || {}).map(([k, e]) =>
-      `${k}: ${e.status || "?"}${e.model ? ` (${e.model})` : ""}${
-        e.status !== "ok" && e.detail ? ` — ${e.detail}` : ""}`);
+    // Always show COVERAGE, on every status. This line is what answers "did
+    // both engines review this set?", and it used to say a bare "ok" whenever
+    // the engine survived even one page — 11 failures out of 12 read as a clean
+    // pass, with the failures buried in the warnings below. A detail was only
+    // ever appended when the status was not "ok", so a partial run looked total.
+    const engBits = Object.entries(r.engines || {}).map(([k, e]) => {
+      const cover = Number.isFinite(e.pages_total) && e.pages_total
+        ? ` ${e.pages_reviewed}/${e.pages_total} sheets` : "";
+      return `${k}: ${e.status || "?"}${cover}${e.model ? ` (${e.model})` : ""}${
+        e.detail ? ` — ${e.detail}` : ""}`;
+    });
     if (engBits.length) {
       out.push(`<div class="small" style="margin-top:6px"><b>Engines:</b> ${
         escapeHtml(engBits.join(" · "))}</div>`);
