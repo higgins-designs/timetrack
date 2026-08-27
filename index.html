@@ -1544,7 +1544,9 @@
       <div class="card" id="da-facts-card">
         <h2>Design manifest <span class="muted" id="da-facts-scope"></span></h2>
         <div id="da-facts-list" style="margin-top:14px"></div>
-        <div class="row" style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
+        <!-- Admin only: the manifest records what the ENGINEER decided, and
+             project_facts is SELECT-only for a designer (migration 0021). -->
+        <div class="row" id="da-fact-form" style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
           <div class="field">
             <label for="da-fact-key">Fact</label>
             <select id="da-fact-key"></select>

@@ -11,6 +11,22 @@ const $ = (id) => document.getElementById(id);
 // ---------------------------------------------------------------- state
 let bootedUid = null;     // guards against re-booting on token refresh
 let me = null;
+
+// Designer capability: Letters and Drawing aids without admin (Ben, 2026-08-27 —
+// "letters, drawing aids are for designers", "proposals are for admins or select
+// office staff"). Admin implies it, so an admin is never locked out of a surface
+// a designer can reach.
+//
+// ⚠️ This is the VIEW half only. The gate is RLS —
+// timetrack_private.can_design() and the `*_designer_*` policies in migration
+// 0021. Two things it deliberately does NOT unlock, enforced in the database
+// rather than by hiding a button: marking a letter sent (that releases Ben's
+// P.E. seal and is terminal), and approving a design-manifest fact (the
+// manifest records what the ENGINEER decided). Nothing financial is touched:
+// proposals and site_visit_billing stay admin-only tables, because RLS cannot
+// hide a column.
+const canDesign = () => Boolean(me && (me.role === "admin" || me.can_design));
+const isAdmin = () => Boolean(me && me.role === "admin");
 let projects = [];        // pickable projects (active/on_hold, assigned)
 let labelCache = {};      // id -> label, incl. projects that left the picker
 let running = null;       // the live timer entry, if any
@@ -212,13 +228,19 @@ async function boot(uid) {
 
   await loadProjects();
   await Promise.all([loadRunning(), loadDay(), loadWeek(), loadDrafts()]);
+  // Designers get the two production surfaces; Proposals and People stay with
+  // admin. Splitting these two blocks is the whole point of migration 0021 —
+  // the letter generator used to cost an admin badge, and an admin badge is
+  // every contracted fee.
+  if (canDesign()) {
+    $("tab-letters-btn").classList.remove("hidden");
+    $("tab-drawing-btn").classList.remove("hidden");
+    initDrawingTab();   // fills the three composer comboboxes; needs projects
+  }
   if (me.role === "admin") {
     $("admin-card").classList.remove("hidden");
     $("tab-people-btn").classList.remove("hidden");
     $("tab-proposals-btn").classList.remove("hidden");
-    $("tab-letters-btn").classList.remove("hidden");
-    $("tab-drawing-btn").classList.remove("hidden");
-    initDrawingTab();   // fills the three composer comboboxes; needs projects
     await loadPeople();
   }
   initVisitForm();   // needs projects, and people if this is an admin
@@ -3206,8 +3228,11 @@ async function loadVisits() {
       .from("site_visit_billing")
       .select("visit_id, rate, rate_basis");
     for (const b of bill || []) visitBilling[b.visit_id] = b;
-    await loadLetters();
   }
+  // Letters are a designer surface, not a billing one. They were loaded inside
+  // the admin block only because admin used to be the only way to reach them,
+  // which left a designer's visits log with no Letter button.
+  if (canDesign()) await loadLetters();
   document.querySelectorAll(".admin-only-col").forEach((n) =>
     n.classList.toggle("hidden", me.role !== "admin"));
 
@@ -3534,7 +3559,7 @@ let lettersByVisit = {};   // visit_id -> latest letter for that visit
 let letterVisitId = null;  // visit the composer is open on, or null
 
 async function loadLetters() {
-  if (me.role !== "admin") return; // RLS denies it anyway; don't even ask
+  if (!canDesign()) return; // RLS denies it anyway; don't even ask
   const { data, error } = await sb
     .from("letters")
     .select(`id, project_id, site_visit_id, letter_type, scopes, scope_items,
@@ -3556,7 +3581,7 @@ function letterScopeLabel(lt) {
 }
 
 function loadLettersTab() {
-  if (me.role !== "admin") return;
+  if (!canDesign()) return;
   // The composer resolves its visit out of `visits`, which was only ever
   // filled by the Site visits tab. Landing here first and opening a letter
   // therefore found an empty array, closed the composer and made the button
@@ -3585,7 +3610,7 @@ function stopLetterPoll() {
 
 function syncLetterPoll() {
   const onTab = !$("panel-letters").classList.contains("hidden");
-  if (!onTab || me.role !== "admin" || !lettersInFlight()) return stopLetterPoll();
+  if (!onTab || !canDesign() || !lettersInFlight()) return stopLetterPoll();
   if (letterPollTimer) return; // already running
   letterPollTimer = setInterval(async () => {
     // Re-check the tab each tick: showTab stops the poll, but a stray timer
@@ -3670,7 +3695,7 @@ function renderLetterBoard() {
       <td class="num small">${lt.pages ?? ""}</td>
       <td>${file}</td>
       <td class="right">${
-        lt.status === "draft"
+        lt.status === "draft" && isAdmin()
           ? `<button class="btn ghost sm" data-ltsent="${lt.id}"
                title="Mark this letter sent. Only after it has actually gone to the client — the file moves to 2 - Sent and this is final.">Sent</button> `
           : ""
@@ -3911,7 +3936,7 @@ function renderLetterStatus() {
 }
 
 $("lt-go").addEventListener("click", async () => {
-  if (me.role !== "admin" || letterVisitId == null) return;
+  if (!canDesign() || letterVisitId == null) return;
   const v = visits.find((x) => x.id === letterVisitId);
   if (!v) return toast("That visit is gone — pick another from the log.", "err");
   const scopes = [...document.querySelectorAll("#lt-scopes [data-ltscope]:checked")]
@@ -4154,13 +4179,13 @@ function initDrawingTab() {
 }
 
 async function loadDrawingTab() {
-  if (!me || me.role !== "admin") return;
+  if (!canDesign()) return;
   await Promise.all([loadDrawingJobs(), loadDrawingFacts()]);
   syncDrawingPoll();
 }
 
 async function loadDrawingJobs() {
-  if (!me || me.role !== "admin") return;
+  if (!canDesign()) return;
   const { data, error } = await sb
     .from("drawing_jobs")
     .select(`id, project_id, kind, payload, messages, status, outputs, results,
@@ -4183,7 +4208,10 @@ let daFactsToken = 0;
 let daFactsFor = null;
 
 async function loadDrawingFacts() {
-  if (!me || me.role !== "admin") return;
+  if (!canDesign()) return;
+  // A designer reads the manifest; only the engineer writes it. Hiding the form
+  // is courtesy — RLS is the guard.
+  $("da-fact-form").classList.toggle("hidden", !isAdmin());
   const proj = $("da-filter-proj").value;
   const token = ++daFactsToken;
   if (!proj) { projectFacts = []; daFactsFor = null; renderDrawingFacts(); return; }
@@ -4218,7 +4246,7 @@ function stopDrawingPoll() {
 
 function syncDrawingPoll() {
   const onTab = !$("panel-drawing").classList.contains("hidden");
-  if (!onTab || !me || me.role !== "admin" || !drawingJobsInFlight()) return stopDrawingPoll();
+  if (!onTab || !canDesign() || !drawingJobsInFlight()) return stopDrawingPoll();
   if (drawingPollTimer) return; // already running
   drawingPollTimer = setInterval(async () => {
     // Re-check each tick: showTab stops the poll, but a stray timer must never
@@ -4517,7 +4545,7 @@ function renderDrawingFacts() {
       <td><div class="da-prov">${escapeHtml(daProvenance(f))}</div>${
         f.notes ? `<div class="small muted">${escapeHtml(f.notes)}</div>` : ""}</td>
       <td class="right" style="white-space:nowrap">${
-        f.status === "proposed"
+        f.status === "proposed" && isAdmin()
           ? `<button class="btn sm" data-dafapp="${f.id}"
                title="Approve — prefill, table seeding and the checker consume approved facts only. Approving supersedes any earlier approved value for this key.">Approve</button>
              <button class="btn ghost sm" data-dafrej="${f.id}">Reject</button>`
@@ -4581,7 +4609,10 @@ $("da-fact-key").addEventListener("change", daSyncFactUnits);
 daSyncFactUnits();
 
 $("da-fact-add").addEventListener("click", async () => {
-  if (!me || me.role !== "admin") return;
+  // ADMIN, not canDesign(): the design manifest records what the ENGINEER
+  // decided, and decision-class values are his alone. RLS agrees —
+  // project_facts is SELECT-only for a designer (migration 0021).
+  if (!isAdmin()) return;
   // The project the panel is SHOWING, so a fact can never be written to a job
   // other than the one whose manifest is on screen.
   const proj = daFactsFor;
@@ -4661,7 +4692,7 @@ $("da-opt-rr").addEventListener("change", () =>
   $("da-rr-depth-wrap").classList.toggle("hidden", !$("da-opt-rr").checked));
 
 $("da-setup-go").addEventListener("click", async () => {
-  if (!me || me.role !== "admin") return;
+  if (!canDesign()) return;
   const projectId = $("da-proj").value;
   if (!projectId) return toast("Pick a project first.", "err");
   const sheets = [...document.querySelectorAll("#da-sheets [data-dasheet]:checked")]
@@ -4798,7 +4829,7 @@ $("da-tout").addEventListener("input", () => { daOutTouched = true; });
 })();
 
 $("da-table-go").addEventListener("click", async () => {
-  if (!me || me.role !== "admin") return;
+  if (!canDesign()) return;
   const projectId = $("da-tproj").value;
   if (!projectId) return toast("Pick a project first.", "err");
   const cols = daCurrentCols();
@@ -4860,7 +4891,7 @@ document.querySelectorAll('input[name="da-cmode"]').forEach((r) =>
 daSyncCheckerMode();
 
 $("da-check-go").addEventListener("click", async () => {
-  if (!me || me.role !== "admin") return;
+  if (!canDesign()) return;
   const projectId = $("da-cproj").value;
   if (!projectId) return toast("Pick a project first.", "err");
   const compare = $("da-cmode-compare").checked;
