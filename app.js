@@ -1134,6 +1134,10 @@ function showTab(name) {
   }
   if (name === "overview") loadOverview();
   if (name === "todo") loadTasks();
+  // `time` was the one panel showTab never reloaded — and it is the tab an
+  // employee lives in, so the one gesture that refreshes everything else did
+  // nothing there.
+  if (name === "time") reloadTimePanel();
   if (name === "visits") loadVisits();
   if (name === "letters") loadLettersTab();
   else stopLetterPoll(); // leaving the board: no reason to keep polling
@@ -1144,6 +1148,67 @@ function showTab(name) {
   if (name === "drawing") loadDrawingTab();
   else stopDrawingPoll(); // leaving the board: no reason to keep polling
 }
+
+// ------------------------------------------------- refresh on coming back
+//
+// NOTHING refreshed an employee's view. boot() fetches once at sign-in, both
+// pollers return early on `me.role !== "admin"`, and showTab reloaded every
+// panel except `time` — the tab an employee works in. A tab left open therefore
+// showed the world as it was at sign-in. It looked fine to an admin because an
+// admin is the one writing, and his own client re-renders after its own writes.
+//
+// Refresh when the tab comes back to the foreground rather than on an interval:
+// the data only matters while someone is looking, and a background timer on a
+// phone spends battery to repaint a hidden page.
+//
+// ⚠️ Do NOT re-boot here. onAuthStateChange already fires on refocus, and
+// re-booting there "used to reset the manual-entry date and wipe whatever was
+// being typed into the week grid" — see that handler. This reloads the VISIBLE
+// panel only, sends the week grid through loadWeekPreservingFocus, and bails
+// out entirely if the user is typing.
+const REFRESH_AFTER_HIDDEN_MS = 30_000;
+let hiddenSince = null;
+let refreshInFlight = false;
+
+async function reloadTimePanel() {
+  await Promise.all([loadProjects(), loadRunning(), loadDay(), loadDrafts()]);
+  await loadWeekPreservingFocus();
+}
+
+function isTyping() {
+  const a = document.activeElement;
+  if (!a || !a.matches) return false;
+  // The week grid is safe — loadWeekPreservingFocus restores the cell and its
+  // half-typed value. Any OTHER field would simply lose what is in it.
+  if (a.matches("#week-body input[data-proj]")) return false;
+  return a.matches("input, textarea, select") && !a.matches("input[type=checkbox], input[type=radio]");
+}
+
+async function refreshVisiblePanel() {
+  if (!me || refreshInFlight || isTyping()) return;
+  // Letters and Drawing aids are admin boards that already poll while work is
+  // in flight, and both own a composer that a background reload would disturb.
+  const panels = ["overview", "todo", "time", "visits", "hours", "proposals", "people"];
+  const visible = panels.find((p) => !$(`panel-${p}`).classList.contains("hidden"));
+  if (!visible) return;
+  refreshInFlight = true;
+  try {
+    if (visible === "time") await reloadTimePanel();
+    else showTab(visible);
+  } catch {
+    // A failed refresh must leave the page exactly as it was. The user still
+    // has the data they had; throwing here would take the panel down with it.
+  } finally {
+    refreshInFlight = false;
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { hiddenSince = Date.now(); return; }
+  const away = hiddenSince ? Date.now() - hiddenSince : 0;
+  hiddenSince = null;
+  if (away >= REFRESH_AFTER_HIDDEN_MS) refreshVisiblePanel();
+});
 
 // ------------------------------------------------------- project drawer
 // The modules were only ever joined by the project number, and there was no
