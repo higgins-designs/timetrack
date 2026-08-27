@@ -1300,6 +1300,7 @@ async function openProjectDrawer(projectId) {
 
 async function pdLoad(id) {
   const admin = me.role === "admin";
+  const design = canDesign();   // letters + drawing jobs; proposals stay admin
   const jobs = [
     sb.from("projects")
       .select("id, number, name, folder, client, status, phase, next_action, is_overhead")
@@ -1319,14 +1320,14 @@ async function pdLoad(id) {
     sb.from("site_visits")
       .select("id, visit_date, visit_type, attendee_name, outcome")
       .eq("project_id", id).order("visit_date", { ascending: false }).limit(200),
-    admin ? sb.from("letters")
+    design ? sb.from("letters")
       .select("id, status, scopes, performed_by, pages, updated_at")
       .eq("project_id", id).order("updated_at", { ascending: false }) : null,
     admin ? sb.from("proposals")
       .select(`id, number, title, status, design_fee, visit_rate, hourly_rate,
                link_confidence, link_note`)
       .eq("project_id", id).order("number", { ascending: false }) : null,
-    admin ? sb.from("drawing_jobs")
+    design ? sb.from("drawing_jobs")
       .select("id, kind, status, updated_at")
       .eq("project_id", id).order("updated_at", { ascending: false }).limit(50) : null,
   ];
@@ -1334,7 +1335,7 @@ async function pdLoad(id) {
     jobs.map((j) => j || Promise.resolve({ data: null, error: null })));
 
   return {
-    id, admin,
+    id, admin, design,
     project: proj.data || null, projectError: proj.error || null,
     tasks: tks.data || [], tasksError: tks.error || null,
     time: tme.data || [], timeError: tme.error || null,
@@ -1444,7 +1445,7 @@ function pdRender(d) {
     ["Last visit", last ? pdShortDate(last.visit_date) : "—", ""],
     ["Next visit", next ? pdShortDate(next.visit_date) : "—", ""],
   ];
-  if (d.admin) facts.push(["Letters", String(d.letters.length), ""]);
+  if (d.design) facts.push(["Letters", String(d.letters.length), ""]);
   if (d.admin && prop) {
     const unsure = prop.link_confidence === "suggested";
     facts.push([
@@ -1506,8 +1507,11 @@ function pdRender(d) {
   out.push(pdSection("Site visits", d.visits.length, visitRows,
     "No visits recorded.", d.visitsError));
 
-  // Admin-only from here down. Not queried for anyone else, and not rendered.
-  if (d.admin) {
+  // Not queried for the people who may not see them, and not rendered either —
+  // an empty "Letters" heading claims a job has none when the truth is that you
+  // cannot see letters. Letters and Drawing aids follow the DESIGNER
+  // capability; Proposal is money and stays admin.
+  if (d.design) {
     const letterRows = d.letters.map((lt) => `
       <tr>
         <td class="when">${escapeHtml(pdStampDate(lt.updated_at))}</td>
@@ -1518,6 +1522,17 @@ function pdRender(d) {
     out.push(pdSection("Letters", d.letters.length, letterRows,
       "No letters for this job.", d.lettersError));
 
+    const drawingRows = d.drawing.map((j) => `
+      <tr>
+        <td class="when">${escapeHtml(pdStampDate(j.updated_at))}</td>
+        <td>${escapeHtml(DRAWING_KIND_LABEL[j.kind] || j.kind)}</td>
+        <td class="small">${drawingStatusHtml(j)}</td>
+      </tr>`);
+    out.push(pdSection("Drawing aids", d.drawing.length, drawingRows,
+      "No drawing jobs on this project.", d.drawingError));
+  }
+
+  if (d.admin) {
     const propRows = d.proposals.map((pr) => `
       <tr>
         <td class="when">${escapeHtml(pr.number)}</td>
@@ -1531,15 +1546,6 @@ function pdRender(d) {
       </tr>`);
     out.push(pdSection("Proposal", d.proposals.length, propRows,
       "No proposal is linked to this job.", d.proposalsError));
-
-    const drawingRows = d.drawing.map((j) => `
-      <tr>
-        <td class="when">${escapeHtml(pdStampDate(j.updated_at))}</td>
-        <td>${escapeHtml(DRAWING_KIND_LABEL[j.kind] || j.kind)}</td>
-        <td class="small">${drawingStatusHtml(j)}</td>
-      </tr>`);
-    out.push(pdSection("Drawing aids", d.drawing.length, drawingRows,
-      "No drawing jobs on this project.", d.drawingError));
   }
 
   out.push(`<div class="pd-foot">
@@ -1698,7 +1704,7 @@ function pdRenderActions(d) {
     ["time", "Log time", "Open the timer with this project already picked", false],
     ["visit", "Schedule visit", "Open the visit form with this project already picked", false],
   ];
-  if (d.admin) {
+  if (d.design) {
     acts.push(["letter", "Draft letter",
       d.visits.length
         ? "A letter is written from a site visit — opens this project's visits log, where each row has a Letter button"
@@ -3233,8 +3239,13 @@ async function loadVisits() {
   // the admin block only because admin used to be the only way to reach them,
   // which left a designer's visits log with no Letter button.
   if (canDesign()) await loadLetters();
+  // Two classes, two audiences. The Letter column used to share `admin-only-col`
+  // with the RATE column, so a designer's visits log had no Letter button — the
+  // one place a letter is composed from. Rate is money and stays admin.
   document.querySelectorAll(".admin-only-col").forEach((n) =>
-    n.classList.toggle("hidden", me.role !== "admin"));
+    n.classList.toggle("hidden", !isAdmin()));
+  document.querySelectorAll(".designer-only-col").forEach((n) =>
+    n.classList.toggle("hidden", !canDesign()));
 
   await ensureLabels(visits.map((v) => v.project_id));
   renderVisitFilters();
@@ -3353,7 +3364,7 @@ function renderVisits() {
           </select></td>
       <td class="num small">${travel}</td>
       <td class="num small admin-only-col${me.role === "admin" ? "" : " hidden"}">${rate}</td>
-      <td class="admin-only-col${me.role === "admin" ? "" : " hidden"}">${letterCell}</td>
+      <td class="designer-only-col${canDesign() ? "" : " hidden"}">${letterCell}</td>
       <td>${cal}</td>
       <td class="right"><button class="btn ghost sm" data-vdel="${v.id}">Delete</button></td>`;
     body.appendChild(tr);
