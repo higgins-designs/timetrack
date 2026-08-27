@@ -3339,7 +3339,11 @@ function renderVisits() {
     const lt = lettersByVisit[v.id];
     const ltColor = lt && lt.status === "error" ? "var(--err)"
       : lt && (lt.status === "draft" || lt.status === "issued") ? "var(--ok)" : "";
-    const letterCell = me.role === "admin"
+    // canDesign(), not admin: showing the COLUMN without the BUTTON in it gives
+    // a designer a visible, permanently empty cell — worse than hiding it,
+    // because it looks like the job has no letter rather than like they cannot
+    // start one.
+    const letterCell = canDesign()
       // Labelled with the status once a letter exists, which reads as a badge
       // rather than a control — the title says out loud that it opens.
       ? `<button class="btn ghost sm" data-vletter="${v.id}"${
