@@ -431,6 +431,20 @@
     margin: 2px 0 4px 24px; }
   .lt-items label { font-size: 13px; color: var(--muted); }
 
+  /* Drawing aids. Evidence badges are told apart by their TEXT (DET / 1-MODEL /
+     2-MODEL), never by colour alone: the coloured tag variants sit under 4.5:1
+     at this size in one theme or the other, and the vocabulary is fixed —
+     evidence classes, never "confirmed". Both classes use existing variables
+     only; tools\test\contrast.mjs measures them. */
+  .da-evi { font-family: var(--mono); letter-spacing: .04em; }
+  /* The provenance line under a fact: value — source page — extracted/engineer. */
+  .da-prov { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .da-finding { margin: 4px 0; }
+  tr.da-detail td { background: var(--grey-bg); }
+  /* Row cells scroll inside .grid-wrap; the min keeps a schedule cell typeable. */
+  #da-trows-table input { min-width: 110px; padding: 6px 8px; }
+  #da-trows-table td, #da-trows-table th { padding: 4px 6px; }
+
   /* A project label that is a way in. Every table renders its project through
      projLink(), so the number on screen is the door to the project drawer. */
   .plink { color: var(--teal-lt); cursor: pointer; text-decoration: none; }
@@ -808,6 +822,7 @@
            id and every test address. -->
       <button class="tab" data-tab="hours">Hours &amp; Fees</button>
       <button class="tab hidden" data-tab="proposals" id="tab-proposals-btn">Proposals</button>
+      <button class="tab hidden" data-tab="drawing" id="tab-drawing-btn">Drawing aids</button>
       <button class="tab hidden" data-tab="people" id="tab-people-btn">People</button>
     </nav>
 
@@ -1483,6 +1498,320 @@
           </table>
         </div>
         <div id="prop-empty" class="empty">No proposals match.</div>
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------ drawing aids (admin) -->
+    <!-- Admin-only (the tab button is revealed by boot). The browser only
+         QUEUES jobs; the office machine (tools/generate-drawing-aids.mjs, kept
+         alive by the HD Drawing Aids Watcher task) files uploads into the
+         Dropbox tree, assembles/renders/reviews, and writes status back.
+         Payload/results shapes mirror tools/drawing-aids-contracts.md — change
+         one, change both. -->
+    <section id="panel-drawing" class="hidden">
+      <div class="card">
+        <h2>Drawing aids <span class="muted" id="da-count"></span>
+          <select id="da-filter-proj" style="width:auto;margin-left:8px;padding:4px 8px"></select>
+        </h2>
+        <div class="grid-wrap">
+          <table id="da-jobs-table">
+            <thead>
+              <tr>
+                <th>Updated</th><th>Project</th><th>Kind</th><th>Status</th>
+                <th>Outputs</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="da-jobs-body"></tbody>
+          </table>
+        </div>
+        <div id="da-jobs-empty" class="empty">
+          No drawing jobs yet — queue a project setup, a table or a check below.
+        </div>
+        <p class="small muted" style="margin:12px 0 0">
+          Evidence classes on findings:
+          <span class="tag da-evi">DET</span> deterministic check ·
+          <span class="tag da-evi">1-MODEL</span> single-model finding ·
+          <span class="tag da-evi">2-MODEL</span> two-model agreement.
+          Findings are advisory drafting observations, never a pass/fail. An
+          output button copies the file path — the browser cannot open files on
+          the office machine.
+        </p>
+      </div>
+
+      <!-- The design manifest: per-project engineering facts between the source
+           documents and every generated aid. Follows the SAME project as the
+           board filter above — one shared current project for the tab. -->
+      <div class="card" id="da-facts-card">
+        <h2>Design manifest <span class="muted" id="da-facts-scope"></span></h2>
+        <div id="da-facts-list" style="margin-top:14px"></div>
+        <div class="row" style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
+          <div class="field">
+            <label for="da-fact-key">Fact</label>
+            <select id="da-fact-key"></select>
+          </div>
+          <div class="field">
+            <label for="da-fact-value">Value</label>
+            <input id="da-fact-value" type="text">
+          </div>
+          <div class="field">
+            <label for="da-fact-units">Units</label>
+            <input id="da-fact-units" type="text">
+          </div>
+          <div class="field grow">
+            <label for="da-fact-notes">Notes <span class="muted">(optional)</span></label>
+            <input id="da-fact-notes" type="text">
+          </div>
+          <button class="btn" id="da-fact-add">Add fact</button>
+        </div>
+        <p class="small muted da-prov" style="margin:10px 0 0">
+          Facts follow the project picked in the filter above. Provenance reads
+          value — source page — extracted/engineer. Nothing AI-extracted flows
+          into a drawing until it is approved here, and decision-class values
+          are typed here and nowhere else.
+        </p>
+      </div>
+
+      <div class="card" id="da-setup-card">
+        <h2>Project setup <span class="muted">— assemble a template set</span></h2>
+        <div class="row">
+          <div class="field grow">
+            <label for="da-proj-q">Project</label>
+            <div class="combo">
+              <input type="hidden" id="da-proj">
+              <input id="da-proj-q" type="text" autocomplete="off" role="combobox"
+                     aria-expanded="false" aria-autocomplete="list"
+                     placeholder="number or address">
+              <div class="combo-list hidden" id="da-proj-list" role="listbox"></div>
+            </div>
+          </div>
+          <div class="field">
+            <label for="da-kit">Sheet kit</label>
+            <select id="da-kit">
+              <option value="residential">Residential (IRC)</option>
+              <option value="ibc">Commercial (IBC)</option>
+              <option value="pool22">Pool 22x34</option>
+              <option value="pool24">Pool 24x36</option>
+            </select>
+          </div>
+        </div>
+        <div class="row" style="margin-top:10px;align-items:flex-start">
+          <div class="field grow">
+            <label>Sheets <span class="muted">— core pre-checked, extended opt-in</span></label>
+            <div id="da-sheets" class="lt-checks"></div>
+          </div>
+          <div class="field grow">
+            <label>Options</label>
+            <div class="lt-checks">
+              <label><input type="checkbox" id="da-opt-prefill" checked>
+                Prefill title blocks &amp; notes from approved facts</label>
+              <label><input type="checkbox" id="da-opt-background">
+                Drafting background from arch plan</label>
+              <label><input type="checkbox" id="da-opt-rr">
+                Soil remove &amp; replace</label>
+            </div>
+            <div id="da-rr-depth-wrap" class="hidden" style="margin:4px 0 0 24px">
+              <input id="da-rr-depth" type="text" placeholder="depth, e.g. 4 ft">
+            </div>
+            <label style="margin-top:8px">Red callouts on S1.0</label>
+            <div class="lt-checks">
+              <label><input type="checkbox" data-dacallout value="existing_foundation">
+                Existing foundation</label>
+              <label><input type="checkbox" data-dacallout value="tree_crz">
+                Tree CRZ</label>
+              <label><input type="checkbox" data-dacallout value="preliminary">
+                Preliminary — pending geotech</label>
+            </div>
+          </div>
+          <div class="field grow">
+            <label>Required submittals (S0.0)</label>
+            <div class="lt-checks">
+              <label><input type="checkbox" data-dasub value="truss_shops" checked>
+                Truss shop drawings</label>
+              <label><input type="checkbox" data-dasub value="steel_shops">
+                Steel shop drawings</label>
+              <label><input type="checkbox" data-dasub value="mix_designs" checked>
+                Concrete mix designs</label>
+              <label><input type="checkbox" data-dasub value="pad_compaction">
+                Pad compaction report</label>
+              <label><input type="checkbox" data-dasub value="swell_tests">
+                Swell tests</label>
+            </div>
+            <label style="margin-top:8px">Engineer observations (S0.0)</label>
+            <div class="lt-checks">
+              <label><input type="checkbox" data-daobs value="foundation_excavation" checked>
+                Foundation excavation</label>
+              <label><input type="checkbox" data-daobs value="concrete_placement" checked>
+                Concrete placement</label>
+              <label><input type="checkbox" data-daobs value="framing" checked>
+                Framing</label>
+              <label><input type="checkbox" data-daobs value="sheathing_nailing" checked>
+                Sheathing nailing</label>
+            </div>
+          </div>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <div class="field grow">
+            <label for="da-file-arch">Architectural drawings <span class="muted">(PDF, optional)</span></label>
+            <input id="da-file-arch" type="file" accept="application/pdf">
+          </div>
+          <div class="field grow">
+            <label for="da-file-geotech">Geotech report <span class="muted">(PDF, optional)</span></label>
+            <input id="da-file-geotech" type="file" accept="application/pdf">
+          </div>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <div class="field grow">
+            <label for="da-setup-notes">Notes <span class="muted">(optional)</span></label>
+            <textarea id="da-setup-notes" rows="2"></textarea>
+          </div>
+          <button class="btn" id="da-setup-go">Queue setup</button>
+        </div>
+        <p class="small muted" style="margin:12px 0 0">
+          The office machine files the PDFs into the project folder, checks the
+          geotech cover address against the project address, proposes extracted
+          facts into the Design manifest above, and assembles the checked sheets
+          into a bookmarked set in <code>working cad\</code>. Prefill uses
+          <b>approved</b> facts only — re-queue the job after approving to fill
+          what was still proposed.
+        </p>
+      </div>
+
+      <div class="card" id="da-table-card">
+        <h2>Table builder <span class="muted">— house-style schedules</span></h2>
+        <div class="row">
+          <div class="field grow">
+            <label for="da-tproj-q">Project</label>
+            <div class="combo">
+              <input type="hidden" id="da-tproj">
+              <input id="da-tproj-q" type="text" autocomplete="off" role="combobox"
+                     aria-expanded="false" aria-autocomplete="list"
+                     placeholder="number or address">
+              <div class="combo-list hidden" id="da-tproj-list" role="listbox"></div>
+            </div>
+          </div>
+          <div class="field">
+            <label for="da-ttype">Table</label>
+            <select id="da-ttype"></select>
+          </div>
+          <div class="field grow hidden" id="da-tcols-wrap">
+            <label for="da-tcols">Columns <span class="muted">(comma-separated)</span></label>
+            <input id="da-tcols" type="text" placeholder="Label, Size, Remarks">
+          </div>
+        </div>
+        <div class="grid-wrap" style="margin-top:10px">
+          <table id="da-trows-table">
+            <thead><tr id="da-trows-head"></tr></thead>
+            <tbody id="da-trows-body"></tbody>
+          </table>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button class="btn ghost sm" id="da-trow-add">Add row</button>
+          <button class="btn ghost sm" id="da-trow-del">Remove last row</button>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <div class="field grow">
+            <label for="da-ttitle">Title</label>
+            <input id="da-ttitle" type="text">
+          </div>
+          <div class="field">
+            <label for="da-twidth">Width (in)</label>
+            <input id="da-twidth" type="number" step="0.1" min="1" value="9.0">
+          </div>
+          <div class="field">
+            <label for="da-theight">Height (in)</label>
+            <input id="da-theight" type="number" step="0.1" min="0.5" value="3.2">
+          </div>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <div class="field grow">
+            <label for="da-tfoot">Footnote <span class="muted">(optional)</span></label>
+            <input id="da-tfoot" type="text">
+          </div>
+          <div class="field grow">
+            <label for="da-tout">Output name</label>
+            <input id="da-tout" type="text">
+          </div>
+          <button class="btn" id="da-table-go">Queue table</button>
+        </div>
+        <p class="small muted" style="margin:12px 0 0">
+          Rows are what YOU typed — the renderer formats engineer-entered data
+          in the house style and never invents schedule contents. Empty rows are
+          dropped on queue. The PDF lands in <code>working cad\tables\</code>.
+        </p>
+      </div>
+
+      <div class="card" id="da-check-card">
+        <h2>Plan checker <span class="muted">— advisory drafting review</span></h2>
+        <div class="row" style="align-items:flex-start">
+          <div class="field">
+            <label>Mode</label>
+            <div class="lt-checks">
+              <label><input type="radio" name="da-cmode" id="da-cmode-check" value="check" checked>
+                Check a drawing</label>
+              <label><input type="radio" name="da-cmode" id="da-cmode-compare" value="compare">
+                Compare two revisions</label>
+            </div>
+          </div>
+          <div class="field grow">
+            <label for="da-cproj-q">Project</label>
+            <div class="combo">
+              <input type="hidden" id="da-cproj">
+              <input id="da-cproj-q" type="text" autocomplete="off" role="combobox"
+                     aria-expanded="false" aria-autocomplete="list"
+                     placeholder="number or address">
+              <div class="combo-list hidden" id="da-cproj-list" role="listbox"></div>
+            </div>
+          </div>
+          <div class="field" id="da-cscope-wrap">
+            <label for="da-cscope">Scope</label>
+            <select id="da-cscope">
+              <option value="auto">Auto</option>
+              <option value="foundation">Foundation</option>
+              <option value="framing">Framing</option>
+              <option value="wind">Wind</option>
+              <option value="detail">Detail</option>
+              <option value="general">General</option>
+            </select>
+          </div>
+        </div>
+        <div class="row" style="margin-top:10px" id="da-subject-wrap">
+          <div class="field grow">
+            <label for="da-file-subject">Drawing set <span class="muted">(PDF)</span></label>
+            <input id="da-file-subject" type="file" accept="application/pdf">
+          </div>
+        </div>
+        <div class="row hidden" style="margin-top:10px" id="da-compare-wrap">
+          <div class="field grow">
+            <label for="da-file-old">Older revision <span class="muted">(PDF)</span></label>
+            <input id="da-file-old" type="file" accept="application/pdf">
+          </div>
+          <div class="field grow">
+            <label for="da-file-new">Newer revision <span class="muted">(PDF)</span></label>
+            <input id="da-file-new" type="file" accept="application/pdf">
+          </div>
+        </div>
+        <div class="row" style="margin-top:10px;align-items:flex-start">
+          <div class="field">
+            <label>Engines</label>
+            <div class="lt-checks">
+              <label><input type="checkbox" id="da-eng-claude" checked> Claude</label>
+              <label><input type="checkbox" id="da-eng-codex" checked> Codex
+                <span class="muted small">— needs codex login on the office machine</span></label>
+            </div>
+          </div>
+          <div class="field grow">
+            <label for="da-check-notes">Notes <span class="muted">(optional — passed to the reviewers)</span></label>
+            <textarea id="da-check-notes" rows="2"></textarea>
+          </div>
+          <button class="btn" id="da-check-go">Queue check</button>
+        </div>
+        <p class="small muted" style="margin:12px 0 0">
+          Deterministic text checks run first, then the checked engines review
+          rasterized sheets. Findings are drafting inconsistencies and missing
+          information — advisory observations with an evidence class, never a
+          pass/fail and never a capacity recalculation. An unavailable engine is
+          reported as unavailable; the other proceeds.
+        </p>
       </div>
     </section>
 

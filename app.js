@@ -217,6 +217,8 @@ async function boot(uid) {
     $("tab-people-btn").classList.remove("hidden");
     $("tab-proposals-btn").classList.remove("hidden");
     $("tab-letters-btn").classList.remove("hidden");
+    $("tab-drawing-btn").classList.remove("hidden");
+    initDrawingTab();   // fills the three composer comboboxes; needs projects
     await loadPeople();
   }
   initVisitForm();   // needs projects, and people if this is an admin
@@ -1127,7 +1129,7 @@ document.querySelectorAll("#tabs .tab").forEach((b) =>
 function showTab(name) {
   document.querySelectorAll("#tabs .tab").forEach((b) =>
     b.classList.toggle("active", b.dataset.tab === name));
-  for (const p of ["overview", "todo", "time", "visits", "letters", "hours", "proposals", "people"]) {
+  for (const p of ["overview", "todo", "time", "visits", "letters", "hours", "proposals", "drawing", "people"]) {
     $(`panel-${p}`).classList.toggle("hidden", p !== name);
   }
   if (name === "overview") loadOverview();
@@ -1137,6 +1139,10 @@ function showTab(name) {
   else stopLetterPoll(); // leaving the board: no reason to keep polling
   if (name === "hours") loadHours();
   if (name === "proposals") loadProposals();
+  // AFTER the proposals line and NEVER between the letters if/else above —
+  // inserting there would rebind that else and silently break letter polling.
+  if (name === "drawing") loadDrawingTab();
+  else stopDrawingPoll(); // leaving the board: no reason to keep polling
 }
 
 // ------------------------------------------------------- project drawer
@@ -1233,8 +1239,11 @@ async function pdLoad(id) {
       .select(`id, number, title, status, design_fee, visit_rate, hourly_rate,
                link_confidence, link_note`)
       .eq("project_id", id).order("number", { ascending: false }) : null,
+    admin ? sb.from("drawing_jobs")
+      .select("id, kind, status, updated_at")
+      .eq("project_id", id).order("updated_at", { ascending: false }).limit(50) : null,
   ];
-  const [proj, tks, tme, vis, lts, pps] = await Promise.all(
+  const [proj, tks, tme, vis, lts, pps, djs] = await Promise.all(
     jobs.map((j) => j || Promise.resolve({ data: null, error: null })));
 
   return {
@@ -1245,6 +1254,7 @@ async function pdLoad(id) {
     visits: vis.data || [], visitsError: vis.error || null,
     letters: lts.data || [], lettersError: lts.error || null,
     proposals: pps.data || [], proposalsError: pps.error || null,
+    drawing: djs.data || [], drawingError: djs.error || null,
   };
 }
 
@@ -1263,6 +1273,7 @@ const PD_GO = {
   "site visits": "Open the Site visits log, filtered to this project",
   letters: "Open the Letters board, filtered to this project",
   proposal: "Open the Proposals register, filtered to this project",
+  "drawing aids": "Open the Drawing aids board, filtered to this project",
 };
 
 function pdSection(label, total, rows, empty, error, note) {
@@ -1433,6 +1444,15 @@ function pdRender(d) {
       </tr>`);
     out.push(pdSection("Proposal", d.proposals.length, propRows,
       "No proposal is linked to this job.", d.proposalsError));
+
+    const drawingRows = d.drawing.map((j) => `
+      <tr>
+        <td class="when">${escapeHtml(pdStampDate(j.updated_at))}</td>
+        <td>${escapeHtml(DRAWING_KIND_LABEL[j.kind] || j.kind)}</td>
+        <td class="small">${drawingStatusHtml(j)}</td>
+      </tr>`);
+    out.push(pdSection("Drawing aids", d.drawing.length, drawingRows,
+      "No drawing jobs on this project.", d.drawingError));
   }
 
   out.push(`<div class="pd-foot">
@@ -1569,6 +1589,11 @@ function pdGo(key, projectId) {
   if (key === "proposal") {
     setProposalProjectFilter(id);
     showTab("proposals");
+    return;
+  }
+  if (key === "drawing aids") {
+    setDrawingProjectFilter(id);
+    showTab("drawing");
   }
 }
 
@@ -3928,6 +3953,884 @@ $("lt-issued").addEventListener("click", () => {
   if (letterVisitId == null) return;
   const lt = lettersByVisit[letterVisitId];
   if (lt) markLetterIssued(lt.id);
+});
+
+// --------------------------------------------------------- drawing aids
+// Admin-only, and the letters architecture end to end: the browser only QUEUES
+// jobs into timetrack.drawing_jobs; tools/generate-drawing-aids.mjs on the
+// office machine does the file work in the Dropbox tree and the AI calls, then
+// writes status/results back. Every shape here mirrors
+// tools/drawing-aids-contracts.md — change one, change both.
+
+// Storage-value → English, like the letters board.
+const DRAWING_STATUS_LABEL = { queued: "Queued", working: "Working", done: "Done", error: "Error" };
+const DRAWING_KIND_LABEL = { setup: "Project setup", table: "Table", check: "Check", compare: "Compare" };
+
+// Findings vocabulary is FIXED (contracts): evidence classes, never the word
+// "confirmed". The badge TEXT carries the distinction — colour stays out of it.
+const EVIDENCE_BADGE = {
+  deterministic: "DET", "single-model": "1-MODEL", "two-model": "2-MODEL",
+};
+const EVIDENCE_TIP = {
+  deterministic: "Deterministic text check — no AI involved",
+  "single-model": "Flagged by one model",
+  "two-model": "Two-model agreement — both engines flagged this independently",
+};
+
+// Sheet registry — mirrors tools\drawing-templates.mjs in the runner.
+// [key, title, core]; core pre-checked, extended opt-in (the letters-scopes
+// philosophy: a checkbox is a content selector someone chose on purpose).
+const DRAWING_KITS = {
+  residential: { label: "Residential (IRC)", sheets: [
+    ["S0.0", "General Notes", true],
+    ["S1.0", "Foundation Plan", true],
+    ["S1.1", "Framing Plan", true],
+    ["S1.2", "Roof Framing Plan", true],
+    ["S1.3", "Wind Bracing Plan", true],
+    ["S2.0", "Foundation Details", true],
+    ["S3.0", "Framing Details", false],
+    ["S3.1", "Typ. Steel Framing Details", false],
+    ["S4.0", "Typ. Wind Bracing Details", true],
+    ["S4.1", "Typ. Wood Framing Details", true],
+  ] },
+  ibc: { label: "Commercial (IBC)", sheets: [
+    ["S0.0", "General Notes", true],
+    ["S0.1", "General Notes (cont.)", true],
+    ["S1.0", "Foundation Plan", true],
+    ["S1.1", "Framing Plan", true],
+    ["S1.2", "Roof Framing Plan", true],
+    ["S1.3", "Wind Bracing Plan", true],
+    ["S4.0", "Typ. Wind Bracing Details", true],
+    ["S4.1", "Typ. Wood Framing Details", true],
+  ] },
+  pool22: { label: "Pool 22x34", sheets: [
+    ["S0.0", "Pool General Notes", true],
+    ["S1.0", "Pool Foundation Plan", true],
+  ] },
+  pool24: { label: "Pool 24x36", sheets: [
+    ["S0.0", "Pool General Notes", true],
+    ["S1.0", "Pool Foundation Plan", true],
+  ] },
+};
+
+// Fact-key registry — mirrors the runner's copy (contracts §fact keys). AI may
+// propose verbatim + selection keys only; decision keys are UI-entry only, so
+// the add-fact form below is the ONLY door for them.
+const FACT_KEYS = [
+  { key: "geotech_firm", label: "Geotech firm", fact_class: "verbatim", units: "" },
+  { key: "geotech_report_no", label: "Geotech report no.", fact_class: "verbatim", units: "" },
+  { key: "geotech_date", label: "Geotech report date", fact_class: "verbatim", units: "" },
+  { key: "soil_class", label: "Soil classification", fact_class: "verbatim", units: "" },
+  { key: "pvr", label: "PVR", fact_class: "verbatim", units: "in" },
+  { key: "pier_min_dia", label: "Min. pier diameter", fact_class: "verbatim", units: "in" },
+  { key: "limestone_depth", label: "Depth to limestone", fact_class: "verbatim", units: "" },
+  { key: "skin_friction", label: "Allowable skin friction", fact_class: "verbatim", units: "psf/ft" },
+  { key: "groundwater", label: "Groundwater observation", fact_class: "verbatim", units: "" },
+  { key: "stories", label: "Stories", fact_class: "verbatim", units: "" },
+  { key: "roof_material", label: "Roof material", fact_class: "verbatim", units: "" },
+  { key: "design_pi", label: "Design PI", fact_class: "selection", units: "" },
+  { key: "soil_bearing", label: "Soil bearing capacity", fact_class: "selection", units: "" },
+  { key: "pier_embed", label: "Pier embedment", fact_class: "selection", units: "" },
+  { key: "foundation_type", label: "Foundation type", fact_class: "selection", units: "" },
+  { key: "lateral_pressure", label: "Lateral earth pressure", fact_class: "selection", units: "pcf" },
+  { key: "remove_replace_depth", label: "Remove & replace depth", fact_class: "selection", units: "in" },
+  { key: "wind_speed", label: "Wind speed (Vult)", fact_class: "selection", units: "mph" },
+  { key: "wind_exposure", label: "Wind exposure", fact_class: "selection", units: "" },
+  { key: "code_edition", label: "Governing code edition", fact_class: "selection", units: "" },
+  { key: "note_a_natural", label: 'Note "A" — natural soils embedment', fact_class: "decision", units: "in" },
+  { key: "note_a_limestone", label: 'Note "A" — limestone embedment', fact_class: "decision", units: "in" },
+  { key: "fc_foundation", label: "f'c — foundation", fact_class: "decision", units: "PSI" },
+  { key: "slab_thickness", label: "Slab thickness", fact_class: "decision", units: "in" },
+  { key: "slab_reinf", label: "Slab reinforcement", fact_class: "decision", units: "" },
+  { key: "surcharge", label: "Design surcharge", fact_class: "decision", units: "psf" },
+  { key: "design_groundwater", label: "Design groundwater elev.", fact_class: "decision", units: "" },
+];
+
+// Table inventory — columns fixed from the house drawing templates (contracts).
+// Seeded rows are STARTING POINTS for engineer-entered data, never content the
+// app decides: header schedule ships its H6–H12 labels, grade beam its two
+// standard rows; everything else starts blank.
+const TABLE_TYPES = {
+  foundation_summary: { label: "Foundation Design Summary", title: "FOUNDATION DESIGN SUMMARY",
+    columns: ["Design Parameter", "Value"], rows: [] },
+  // Row LABELS and the template's own standard reinforcement are seeds; the
+  // dimensions are not. Pre-filling 12"x30" would put a member size the
+  // engineer never entered onto a drawing that says he did — the template
+  // itself ships these cells as "-" for that reason.
+  grade_beam: { label: "Grade Beam Schedule", title: "GRADE BEAM SCHEDULE",
+    columns: ["Label", "Width", "Depth", "Pen.", "Reinforcement"],
+    rows: [
+      ["Perimeter Beams", "", "", 'Note "A"', '(2) #5 T&B w/ #3 ties @ 12" O.C.'],
+      ["Interior Beams", "", "", "", '(2) #5 T&B w/ #3 ties @ 12" O.C.'],
+    ] },
+  column: { label: "Column Schedule", title: "COLUMN SCHEDULE",
+    columns: ["Label", "Size", "Remarks"], rows: [] },
+  joist: { label: "Joist Schedule", title: "JOIST SCHEDULE",
+    columns: ["Label", "Size", "Max. Spacing", "Remarks"], rows: [] },
+  embed_plate: { label: "Embed Plate Schedule", title: "EMBED PLATE SCHEDULE",
+    columns: ["Label", "W", "D", "Headed Studs", "Thk.", "Condition"], rows: [] },
+  header: { label: "Header Schedule", title: "HEADER SCHEDULE",
+    columns: ["Label", "Size", "Jamb Studs"],
+    rows: [["H6", "2-2x6", "1 jack, 1 king"], ["H8", "2-2x8", "1 jack, 2 king"],
+           ["H10", "2-2x10", "2 jack, 2 king"], ["H12", "2-2x12", "2 jack, 2 king"]] },
+  wind_bracing: { label: "Wind Bracing Legend", title: "WIND BRACING LEGEND",
+    columns: ["Label", "Description", "Edge Nailing", "Sill Plate Nailing", "Detail Ref."], rows: [] },
+  custom: { label: "Custom", title: "", columns: null, rows: [] },
+};
+
+let drawingJobs = [];        // admin only; RLS returns nothing for anyone else
+let projectFacts = [];       // facts for the tab's selected project
+const daExpanded = new Set(); // job ids whose details row is open — survives the poll's re-render
+
+function initDrawingTab() {
+  fillProjectCombo($("da-proj"), projects);
+  fillProjectCombo($("da-tproj"), projects);
+  fillProjectCombo($("da-cproj"), projects);
+}
+
+async function loadDrawingTab() {
+  if (!me || me.role !== "admin") return;
+  await Promise.all([loadDrawingJobs(), loadDrawingFacts()]);
+  syncDrawingPoll();
+}
+
+async function loadDrawingJobs() {
+  if (!me || me.role !== "admin") return;
+  const { data, error } = await sb
+    .from("drawing_jobs")
+    .select(`id, project_id, kind, payload, messages, status, outputs, results,
+             warnings, manifest, error, upload_paths, requested_by, created_at, updated_at`)
+    .order("updated_at", { ascending: false });
+  if (error) return fail("Loading drawing jobs", error);
+  drawingJobs = data || [];
+  await ensureLabels(drawingJobs.map((j) => j.project_id));
+  renderDrawingBoard();
+}
+
+// The project these facts belong to, captured when the load started. The
+// heading and the Approve buttons are rendered from THIS, never from a fresh
+// read of the select — otherwise a slow response for project A lands after the
+// filter has moved to B and paints A's rows under B's name, with live Approve
+// buttons. Approving there supersedes an approved value on a project Ben never
+// opened, silently, and prefill then consumes it as blessed. The project drawer
+// guards its loads the same way (pdToken).
+let daFactsToken = 0;
+let daFactsFor = null;
+
+async function loadDrawingFacts() {
+  if (!me || me.role !== "admin") return;
+  const proj = $("da-filter-proj").value;
+  const token = ++daFactsToken;
+  if (!proj) { projectFacts = []; daFactsFor = null; renderDrawingFacts(); return; }
+  const { data, error } = await sb
+    .from("project_facts")
+    .select(`id, project_id, key, label, value, units, fact_class, status,
+             source, source_ref, extracted_by, notes, updated_at`)
+    .eq("project_id", proj)
+    .in("status", ["approved", "proposed"])
+    .order("key", { ascending: true });
+  if (token !== daFactsToken) return;   // a newer load owns the panel now
+  if (error) return fail("Loading the design manifest", error);
+  projectFacts = data || [];
+  daFactsFor = proj;
+  renderDrawingFacts();
+}
+
+// ---- polling: clone of the letters poll -----------------------------------
+// Fetch-on-open otherwise; poll only while a job is actually in flight, and
+// refresh ONLY the board + facts renders — NEVER the composer inputs (the
+// full-render vs partial-refresh house rule; see renderLetterComposer).
+let drawingPollTimer = null;
+const DRAWING_POLL_MS = 4000;
+
+function drawingJobsInFlight() {
+  return drawingJobs.some((j) => j.status === "queued" || j.status === "working");
+}
+
+function stopDrawingPoll() {
+  if (drawingPollTimer) { clearInterval(drawingPollTimer); drawingPollTimer = null; }
+}
+
+function syncDrawingPoll() {
+  const onTab = !$("panel-drawing").classList.contains("hidden");
+  if (!onTab || !me || me.role !== "admin" || !drawingJobsInFlight()) return stopDrawingPoll();
+  if (drawingPollTimer) return; // already running
+  drawingPollTimer = setInterval(async () => {
+    // Re-check each tick: showTab stops the poll, but a stray timer must never
+    // repaint a hidden panel.
+    if ($("panel-drawing").classList.contains("hidden")) return stopDrawingPoll();
+    await loadDrawingJobs();       // renders the board only
+    await loadDrawingFacts();      // a finished setup proposes facts; show them
+    if (!drawingJobsInFlight()) stopDrawingPoll();
+  }, DRAWING_POLL_MS);
+}
+
+// ---- project filter (the letters lt-filter-proj pattern) ------------------
+
+// Static control: attached once, never inside a render.
+$("da-filter-proj").addEventListener("change", () => {
+  renderDrawingBoard();
+  loadDrawingFacts();
+});
+
+function setDrawingProjectFilter(id) { pickProjectOption($("da-filter-proj"), id); }
+
+function renderDrawingProjectFilter() {
+  const sel = $("da-filter-proj");
+  const keep = sel.value;
+  const ids = [...new Set(drawingJobs.map((j) => String(j.project_id)).filter((x) => x && x !== "null"))];
+  if (keep && !ids.includes(keep)) ids.push(keep);   // see renderTodoProjectFilter
+  ids.sort((a, b) => labelFor(a).localeCompare(labelFor(b)));
+  sel.innerHTML = `<option value="">All projects</option>` +
+    ids.map((id) => `<option value="${id}">${escapeHtml(labelFor(id))}</option>`).join("");
+  if (keep) sel.value = keep;
+}
+
+// ---- jobs board -----------------------------------------------------------
+
+function drawingStatusHtml(j) {
+  const label = DRAWING_STATUS_LABEL[j.status] || j.status;
+  const color = j.status === "error" ? "var(--err)" : j.status === "done" ? "var(--ok)" : "";
+  return `<span class="tag"${color ? ` style="color:${color};border-color:${color}"` : ""}>${
+    escapeHtml(label)}</span>`;
+}
+
+function daManifestLine(m) {
+  if (!m) return "";
+  const bits = [];
+  if (m.runner_version) bits.push(`runner ${m.runner_version}`);
+  if (m.checklist_version) bits.push(`checklist ${m.checklist_version}`);
+  if (m.prompt_version) bits.push(`prompt ${m.prompt_version}`);
+  for (const [k, v] of Object.entries(m.models || {})) if (v) bits.push(`${k}: ${v}`);
+  return bits.join(" · ");
+}
+
+// The expanded details row for one job. Everything here is runner-written data
+// rendered read-only; findings keep the fixed evidence vocabulary.
+function renderDrawingDetails(j) {
+  const out = [];
+  if (j.status === "queued") out.push(`<div class="lt-sys">Queued — waiting for the office machine.</div>`);
+  if (j.status === "working") out.push(`<div class="lt-sys">The office machine is working on this…</div>`);
+  if (j.error) out.push(`<div class="lt-sys err">${escapeHtml(j.error)}</div>`);
+  for (const m of (Array.isArray(j.messages) ? j.messages : [])) {
+    out.push(`<div class="lt-bubble"><div class="small muted">${
+      escapeHtml(fmtWhen(m.at))}</div>${escapeHtml(m.text || "")}</div>`);
+  }
+  const r = j.results || {};
+  if (j.kind === "setup") {
+    const ac = r.address_check;
+    if (ac) {
+      const verdict = { match: "Match", mismatch: "MISMATCH — extraction and prefill refused",
+        unreadable: "Unreadable" }[ac.verdict] || ac.verdict;
+      const color = ac.verdict === "match" ? "" :
+        ac.verdict === "mismatch" ? "var(--err)" : "var(--warn)";
+      out.push(`<div class="small" style="margin-top:6px"><b>Geotech address check:</b>
+        <span${color ? ` style="color:${color};font-weight:700"` : ""}>${escapeHtml(verdict)}</span>
+        <span class="muted">— geotech says &quot;${escapeHtml(ac.geotech_address || "?")}&quot;,
+        project is &quot;${escapeHtml(ac.project_address || "?")}&quot;</span></div>`);
+    }
+    if (Array.isArray(r.facts_used) && r.facts_used.length) {
+      out.push(`<div class="small" style="margin-top:6px"><b>Approved facts used:</b> ${
+        r.facts_used.map((f) => escapeHtml(`${f.key} = ${f.value}`)).join(" · ")}</div>`);
+    }
+    if (r.facts_proposed) {
+      out.push(`<div class="small" style="margin-top:6px">${
+        escapeHtml(String(r.facts_proposed))} fact(s) proposed — review them in the Design manifest below.</div>`);
+    }
+    if (Array.isArray(r.prefilled) && r.prefilled.length) {
+      out.push(`<div class="small" style="margin-top:6px"><b>Prefilled:</b> ${
+        r.prefilled.map((p) => escapeHtml(`${p.sheet} · ${p.field} = ${p.value}`)).join(" · ")}</div>`);
+    }
+    if (r.background) {
+      out.push(`<div class="small" style="margin-top:6px"><b>Drafting background:</b> ${
+        escapeHtml(r.background.status || "")}${
+        r.background.detail ? ` <span class="muted">— ${escapeHtml(r.background.detail)}</span>` : ""}</div>`);
+    }
+  }
+  if (j.kind === "check" || j.kind === "compare") {
+    const engBits = Object.entries(r.engines || {}).map(([k, e]) =>
+      `${k}: ${e.status || "?"}${e.model ? ` (${e.model})` : ""}${
+        e.status !== "ok" && e.detail ? ` — ${e.detail}` : ""}`);
+    if (engBits.length) {
+      out.push(`<div class="small" style="margin-top:6px"><b>Engines:</b> ${
+        escapeHtml(engBits.join(" · "))}</div>`);
+    }
+    const findings = Array.isArray(r.findings) ? r.findings : [];
+    if (findings.length) {
+      const bySheet = {};
+      for (const f of findings) (bySheet[f.sheet || "(no sheet)"] ||= []).push(f);
+      const sevRank = { high: 0, medium: 1, low: 2, info: 3 };
+      for (const sheet of Object.keys(bySheet).sort()) {
+        const list = bySheet[sheet]
+          .sort((a, b) => (sevRank[a.severity] ?? 9) - (sevRank[b.severity] ?? 9));
+        out.push(`<div style="margin-top:8px"><b class="small">${escapeHtml(sheet)}</b>${
+          list.map((f) => `
+            <div class="da-finding small">
+              <span class="tag da-evi" title="${escapeHtml((EVIDENCE_TIP[f.evidence] || f.evidence || "") +
+                (f.engine ? ` · ${f.engine}` : ""))}">${
+                escapeHtml(EVIDENCE_BADGE[f.evidence] || f.evidence || "?")}</span>
+              <span class="tag${f.severity === "high" ? " nb" : ""}">${escapeHtml(f.severity || "")}</span>
+              <span class="muted">${escapeHtml(f.category || "")}</span>
+              ${escapeHtml(f.finding || "")}${
+                f.location ? ` <span class="muted">— ${escapeHtml(f.location)}</span>` : ""}${
+                f.page ? ` <span class="muted">· p.${escapeHtml(String(f.page))}</span>` : ""}
+            </div>`).join("")}</div>`);
+      }
+    } else if (j.status === "done") {
+      out.push(`<div class="small muted" style="margin-top:6px">No findings —
+        an advisory review, not a certification that the set is right.</div>`);
+    }
+  }
+  for (const w of (Array.isArray(j.warnings) ? j.warnings : [])) {
+    out.push(`<div class="lt-sys" style="color:var(--warn)">${
+      escapeHtml(typeof w === "string" ? w : JSON.stringify(w))}</div>`);
+  }
+  const mline = daManifestLine(j.manifest);
+  if (mline) out.push(`<div class="da-prov" style="margin-top:6px">${escapeHtml(mline)}</div>`);
+  if (Array.isArray(j.upload_paths) && j.upload_paths.length) {
+    out.push(`<div class="da-prov">Inputs: ${escapeHtml(j.upload_paths.map((u) =>
+      `${u.slot}: ${u.name || u.object}${u.sha256 ? ` (${u.sha256.slice(0, 8)}…)` : ""}`).join(" · "))}</div>`);
+  }
+  return out.join("") || `<div class="small muted">Nothing to show yet.</div>`;
+}
+
+function renderDrawingBoard() {
+  renderDrawingProjectFilter();
+  const only = $("da-filter-proj").value;
+  const all = drawingJobs;                       // query is already newest-first
+  const rows = only ? all.filter((j) => String(j.project_id) === only) : all;
+  $("da-count").textContent = all.length
+    ? (rows.length === all.length ? `· ${all.length} on record` : `· ${rows.length} of ${all.length}`)
+    : "";
+  // Same honesty rule as the letters board: with a filter on, "none yet" is a
+  // claim the filtered view cannot support.
+  $("da-jobs-empty").textContent = only
+    ? `No drawing jobs on ${labelFor(only)}.`
+    : "No drawing jobs yet — queue a project setup, a table or a check below.";
+  $("da-jobs-empty").classList.toggle("hidden", rows.length > 0);
+  $("da-jobs-table").classList.toggle("hidden", rows.length === 0);
+
+  $("da-jobs-body").innerHTML = rows.map((j) => {
+    const outputs = Array.isArray(j.outputs) && j.outputs.length
+      ? j.outputs.map((o) => `<button class="btn ghost sm" data-dacopy="${escapeHtml(o.path || "")}"
+            title="Copy the file path — the browser cannot open files on the office machine:
+${escapeHtml(o.path || "")}">${escapeHtml(o.label || (o.path || "").split("\\").pop() || "file")}</button>`)
+        .join(" ")
+      : `<span class="muted">—</span>`;
+    const open = daExpanded.has(j.id);
+    return `
+      <tr>
+        <td class="small">${escapeHtml(fmtWhen(j.updated_at))}</td>
+        <td>${projLink(j.project_id)}</td>
+        <td class="small">${escapeHtml(DRAWING_KIND_LABEL[j.kind] || j.kind)}</td>
+        <td>${drawingStatusHtml(j)}</td>
+        <td>${outputs}</td>
+        <td class="right" style="white-space:nowrap">
+          <button class="btn ghost sm" data-daview="${j.id}">${open ? "Hide" : "View"}</button>
+          <button class="btn ghost sm" data-dareq="${j.id}"
+            title="Send this job back to the queue — it re-runs with the facts approved as of now.">Re-queue</button>
+          <button class="btn ghost sm" data-dadel="${j.id}">Delete</button>
+        </td>
+      </tr>` + (open
+        ? `<tr class="da-detail"><td colspan="6">${renderDrawingDetails(j)}</td></tr>`
+        : "");
+  }).join("");
+
+  // innerHTML-created controls: re-wired after every render, no exception.
+  $("da-jobs-body").querySelectorAll("[data-daview]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const id = Number(b.dataset.daview);
+      if (daExpanded.has(id)) daExpanded.delete(id); else daExpanded.add(id);
+      renderDrawingBoard();
+    }));
+  $("da-jobs-body").querySelectorAll("[data-dareq]").forEach((b) =>
+    b.addEventListener("click", () => requeueDrawingJob(Number(b.dataset.dareq))));
+  $("da-jobs-body").querySelectorAll("[data-dadel]").forEach((b) =>
+    b.addEventListener("click", () => deleteDrawingJob(Number(b.dataset.dadel))));
+  $("da-jobs-body").querySelectorAll("[data-dacopy]").forEach((b) =>
+    b.addEventListener("click", () => daCopyPath(b.dataset.dacopy)));
+}
+
+// A page served over http cannot navigate to file:// — hand the path over
+// instead (the "Open folder" precedent in the project drawer).
+function daCopyPath(path) {
+  if (!path) return;
+  if (!navigator.clipboard) return toast(path, "warn");
+  navigator.clipboard.writeText(path).then(
+    () => toast("Path copied — paste it into Explorer."),
+    () => toast(path, "warn"));
+}
+
+// Prompt-free re-queue through the server-side RPC: the message append and the
+// status flip happen atomically in the database, and the runner's claim fence
+// handles a job it was mid-way through.
+async function requeueDrawingJob(id) {
+  const { data, error } = await sb.rpc("queue_drawing_job", {
+    p_job_id: id, p_text: null, p_payload: null,
+  });
+  if (error) return fail("Re-queuing the job", error);
+  if (data == null || (Array.isArray(data) && !data.length)) {
+    return toast("That job could not be re-queued — nothing was written.", "warn");
+  }
+  toast("Re-queued — it runs with the facts approved as of now.");
+  await loadDrawingJobs();
+  syncDrawingPoll();
+}
+
+// Deleting removes the RECORD. Files already uploaded, rendered or filed on
+// the office machine stay on disk — the app cannot and must not delete inside
+// the Dropbox tree.
+async function deleteDrawingJob(id) {
+  const j = drawingJobs.find((x) => x.id === id);
+  if (!j) return;
+  let msg = `Delete this ${(DRAWING_KIND_LABEL[j.kind] || j.kind).toLowerCase()} job record (${
+    labelFor(j.project_id)})? This cannot be undone.\n\nOnly the record here is removed — ` +
+    `anything already uploaded, rendered or filed on the office machine stays on disk.`;
+  if (j.status === "working") {
+    msg += `\n\nIt is running RIGHT NOW — the run will finish but nothing will record it.`;
+  }
+  if (Array.isArray(j.outputs) && j.outputs.length) {
+    msg += `\n\nOutputs that stay on disk:\n${j.outputs.map((o) => o.path).join("\n")}`;
+  }
+  if (!confirm(msg)) return;
+  const { data, error } = await sb.from("drawing_jobs").delete().eq("id", id).select("id");
+  if (error) return fail("Deleting the job", error);
+  if (!data || !data.length) return toast("Nothing was deleted.", "warn");
+  daExpanded.delete(id);
+  await loadDrawingJobs();
+  toast("Job record deleted — files stay on disk.");
+}
+
+// ---- design manifest (facts) ----------------------------------------------
+
+function daProvenance(f) {
+  const val = `${f.value ?? ""}${f.units ? ` ${f.units}` : ""}`.trim();
+  const src = `${f.source || "no source"}${f.source_ref ? ` ${f.source_ref}` : ""}`;
+  return `${val || "—"} — ${src} — ${f.extracted_by ? "extracted" : "engineer"}`;
+}
+
+function renderDrawingFacts() {
+  // The project whose rows are actually in `projectFacts` — not whatever the
+  // filter says right now. These must never disagree.
+  const proj = daFactsFor;
+  $("da-facts-scope").textContent = proj
+    ? `— ${labelFor(proj)}` : "— pick a project in the filter above";
+  const box = $("da-facts-list");
+  if (!proj) {
+    box.innerHTML = `<div class="empty">The design manifest is per-project — pick one in the
+      Drawing aids filter above, or open a project and use its drawer.</div>`;
+    return;
+  }
+  const approved = projectFacts.filter((f) => f.status === "approved");
+  const proposed = projectFacts.filter((f) => f.status === "proposed");
+  if (!approved.length && !proposed.length) {
+    box.innerHTML = `<div class="empty">No facts yet on ${escapeHtml(labelFor(proj))} — queue a
+      project setup with a geotech report to extract some, or add one below.</div>`;
+    return;
+  }
+  const row = (f) => `
+    <tr>
+      <td>${escapeHtml(f.label || f.key)}<div class="small muted mono">${escapeHtml(f.key)}</div></td>
+      <td>${escapeHtml(f.value ?? "")}${
+        f.units ? ` <span class="muted small">${escapeHtml(f.units)}</span>` : ""}</td>
+      <td><span class="tag">${escapeHtml(f.fact_class)}</span></td>
+      <td><div class="da-prov">${escapeHtml(daProvenance(f))}</div>${
+        f.notes ? `<div class="small muted">${escapeHtml(f.notes)}</div>` : ""}</td>
+      <td class="right" style="white-space:nowrap">${
+        f.status === "proposed"
+          ? `<button class="btn sm" data-dafapp="${f.id}"
+               title="Approve — prefill, table seeding and the checker consume approved facts only. Approving supersedes any earlier approved value for this key.">Approve</button>
+             <button class="btn ghost sm" data-dafrej="${f.id}">Reject</button>`
+          : ""}</td>
+    </tr>`;
+  const group = (label, list) => list.length ? `
+    <div class="tgroup">
+      <div class="gh">${label} <span>${list.length}</span></div>
+      <div class="grid-wrap"><table><tbody>${list.map(row).join("")}</tbody></table></div>
+    </div>` : "";
+  box.innerHTML =
+    group("Approved", approved) +
+    group("Proposed — awaiting review", proposed);
+
+  // innerHTML-created controls: re-wired after every render.
+  box.querySelectorAll("[data-dafapp]").forEach((b) =>
+    b.addEventListener("click", () => approveDrawingFact(Number(b.dataset.dafapp))));
+  box.querySelectorAll("[data-dafrej]").forEach((b) =>
+    b.addEventListener("click", () => rejectDrawingFact(Number(b.dataset.dafrej))));
+}
+
+async function approveDrawingFact(id) {
+  // approve_fact() supersedes any prior approved row for the same
+  // (project, key) atomically — the partial unique index owns that rule.
+  const { data, error } = await sb.rpc("approve_fact", { p_fact_id: id });
+  if (error) return fail("Approving the fact", error);
+  if (data == null || (Array.isArray(data) && !data.length)) {
+    return toast("Nothing was approved — that fact may already be decided.", "warn");
+  }
+  toast("Approved — jobs queued from now on use it.");
+  await loadDrawingFacts();
+}
+
+async function rejectDrawingFact(id) {
+  // Status guard in the WHERE clause: a fact approved from another tab must
+  // not be quietly flipped to rejected by a stale button.
+  const { data, error } = await sb.from("project_facts")
+    .update({ status: "rejected" }).eq("id", id).eq("status", "proposed").select("id");
+  if (error) return fail("Rejecting the fact", error);
+  if (!data || !data.length) return toast("Nothing changed — that fact is no longer proposed.", "warn");
+  toast("Rejected.");
+  await loadDrawingFacts();
+}
+
+// The add-fact form — the only door for decision-class values. Filled from the
+// static registry, so it can populate at module scope like the kind selects.
+$("da-fact-key").innerHTML = ["verbatim", "selection", "decision"].map((cls) =>
+  `<optgroup label="${
+    cls === "verbatim" ? "Verbatim — the report states it outright"
+    : cls === "selection" ? "Selection — the report offers alternatives"
+    : "Decision — what the engineer chose"}">` +
+  FACT_KEYS.filter((k) => k.fact_class === cls).map((k) =>
+    `<option value="${escapeHtml(k.key)}">${escapeHtml(k.label)}</option>`).join("") +
+  `</optgroup>`).join("");
+
+function daSyncFactUnits() {
+  const reg = FACT_KEYS.find((k) => k.key === $("da-fact-key").value);
+  $("da-fact-units").placeholder = (reg && reg.units) || "—";
+}
+$("da-fact-key").addEventListener("change", daSyncFactUnits);
+daSyncFactUnits();
+
+$("da-fact-add").addEventListener("click", async () => {
+  if (!me || me.role !== "admin") return;
+  // The project the panel is SHOWING, so a fact can never be written to a job
+  // other than the one whose manifest is on screen.
+  const proj = daFactsFor;
+  if (!proj) return toast("Pick a project in the filter above first.", "err");
+  const key = $("da-fact-key").value;
+  const reg = FACT_KEYS.find((k) => k.key === key);
+  if (!reg) return toast("Pick a fact.", "err");
+  const value = $("da-fact-value").value.trim();
+  if (!value) return toast("Enter the value.", "err");
+  // Blank units fall back to the registry's usual unit — the placeholder reads
+  // that way, and a bare bearing capacity would be wrong on a sheet.
+  const units = $("da-fact-units").value.trim() || reg.units || "";
+  $("da-fact-add").disabled = true;
+  try {
+    const { data, error } = await sb.rpc("set_fact", {
+      p_project_id: Number(proj), p_key: key, p_label: reg.label,
+      p_value: value, p_units: units, p_fact_class: reg.fact_class,
+      p_notes: $("da-fact-notes").value.trim() || null,
+    });
+    if (error) return fail("Saving the fact", error);
+    if (data == null || (Array.isArray(data) && !data.length)) {
+      return toast("That fact did not save — nothing was written.", "warn");
+    }
+    $("da-fact-value").value = "";
+    $("da-fact-units").value = "";
+    $("da-fact-notes").value = "";
+    toast("Saved — jobs queued from now on use it.");
+    await loadDrawingFacts();
+  } finally {
+    $("da-fact-add").disabled = false;
+  }
+});
+
+// ---- uploads (storage bucket drawing-intake) ------------------------------
+// Upload FIRST, insert the row only once every object landed: a row that
+// references an object that never arrived is a job the runner can only fail.
+// Hash and upload the SAME bytes — the runner re-hashes after download and
+// refuses a mismatch, which is what catches a truncated upload.
+async function daUploadFiles(files) {
+  const jobFolder = `job-${crypto.randomUUID()}`;
+  const uploads = [];
+  for (const { slot, file } of files) {
+    const buf = await file.arrayBuffer();
+    const digest = await crypto.subtle.digest("SHA-256", buf);
+    const sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const object = `${jobFolder}/${slot}.pdf`;
+    const { error } = await sb.storage.from("drawing-intake")
+      .upload(object, buf, { contentType: "application/pdf" });
+    if (error) throw new Error(`${slot}: ${error.message}`);
+    uploads.push({ slot, object, name: file.name, sha256, size: file.size });
+  }
+  return uploads;
+}
+
+// Best-effort cleanup when the row insert fails after a successful upload.
+// The bucket is a transient inbox either way; the runner ignores objects no
+// row references.
+async function daRemoveUploads(uploads) {
+  if (!uploads || !uploads.length) return;
+  try { await sb.storage.from("drawing-intake").remove(uploads.map((u) => u.object)); }
+  catch { /* transient bucket; nothing depends on this succeeding */ }
+}
+
+// ---- project setup composer -----------------------------------------------
+
+function renderDrawingSheets() {
+  const kit = DRAWING_KITS[$("da-kit").value] || DRAWING_KITS.residential;
+  $("da-sheets").innerHTML = kit.sheets.map(([key, title, core]) => `
+    <label><input type="checkbox" data-dasheet="${escapeHtml(key)}"${core ? " checked" : ""}>
+      <span class="mono small">${escapeHtml(key)}</span> ${escapeHtml(title)}${
+      core ? "" : ` <span class="muted small">(extended)</span>`}</label>`).join("");
+}
+$("da-kit").addEventListener("change", renderDrawingSheets);
+renderDrawingSheets();
+
+$("da-opt-rr").addEventListener("change", () =>
+  $("da-rr-depth-wrap").classList.toggle("hidden", !$("da-opt-rr").checked));
+
+$("da-setup-go").addEventListener("click", async () => {
+  if (!me || me.role !== "admin") return;
+  const projectId = $("da-proj").value;
+  if (!projectId) return toast("Pick a project first.", "err");
+  const sheets = [...document.querySelectorAll("#da-sheets [data-dasheet]:checked")]
+    .map((c) => c.dataset.dasheet);
+  if (!sheets.length) return toast("Check at least one sheet.", "err");
+  const arch = $("da-file-arch").files[0] || null;
+  const geotech = $("da-file-geotech").files[0] || null;
+  if ($("da-opt-background").checked && !arch) {
+    return toast("The drafting background is built from the architectural PDF — attach it or untick the option.", "err");
+  }
+  const sub = (v) => Boolean(document.querySelector(`#panel-drawing [data-dasub][value="${v}"]`)?.checked);
+  const obs = (v) => Boolean(document.querySelector(`#panel-drawing [data-daobs][value="${v}"]`)?.checked);
+  const rr = $("da-opt-rr").checked;
+  const payload = {
+    kit: $("da-kit").value,
+    sheets,
+    options: {
+      prefill: $("da-opt-prefill").checked,
+      background: $("da-opt-background").checked,
+      callouts: [...document.querySelectorAll("#panel-drawing [data-dacallout]:checked")]
+        .map((c) => c.value),
+      submittals: {
+        truss_shops: sub("truss_shops"), steel_shops: sub("steel_shops"),
+        mix_designs: sub("mix_designs"), pad_compaction: sub("pad_compaction"),
+        swell_tests: sub("swell_tests"),
+      },
+      observations: {
+        foundation_excavation: obs("foundation_excavation"),
+        concrete_placement: obs("concrete_placement"),
+        framing: obs("framing"), sheathing_nailing: obs("sheathing_nailing"),
+      },
+      remove_replace: { required: rr, depth: rr ? $("da-rr-depth").value.trim() : "" },
+    },
+  };
+  const note = $("da-setup-notes").value.trim();
+  $("da-setup-go").disabled = true;
+  try {
+    let uploads;
+    try {
+      uploads = await daUploadFiles([
+        ...(arch ? [{ slot: "arch", file: arch }] : []),
+        ...(geotech ? [{ slot: "geotech", file: geotech }] : []),
+      ]);
+    } catch (e) { return fail("Uploading the PDFs (nothing was queued)", e); }
+    const { data, error } = await sb.from("drawing_jobs").insert({
+      project_id: Number(projectId), kind: "setup", payload,
+      upload_paths: uploads, status: "queued",
+      messages: note ? [{ at: new Date().toISOString(), text: note }] : [],
+      requested_by: me.id,
+    }).select("id");
+    if (error) { await daRemoveUploads(uploads); return fail("Queuing the setup", error); }
+    if (!data || !data.length) {
+      await daRemoveUploads(uploads);
+      return toast("That did not queue — nothing was written.", "warn");
+    }
+    $("da-file-arch").value = "";
+    $("da-file-geotech").value = "";
+    $("da-setup-notes").value = "";
+    toast("Setup queued — the office machine files the PDFs and assembles the set.");
+    await Promise.all([loadDrawingJobs(), loadDrawingFacts()]);
+    syncDrawingPoll();
+  } finally {
+    $("da-setup-go").disabled = false;
+  }
+});
+
+// ---- table builder composer -----------------------------------------------
+
+$("da-ttype").innerHTML = Object.entries(TABLE_TYPES).map(([k, t]) =>
+  `<option value="${k}">${escapeHtml(t.label)}</option>`).join("");
+
+let daOutTouched = false;    // stop auto-fill from clobbering a hand-set out name
+
+function daTitleCase(s) {
+  return String(s).toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase()).trim();
+}
+function daTableType() { return $("da-ttype").value; }
+function daCurrentCols() {
+  if (daTableType() === "custom") {
+    return $("da-tcols").value.split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  return TABLE_TYPES[daTableType()].columns.slice();
+}
+// Raw harvest, blanks kept: a re-render (add row, column change) must not eat
+// a row someone left empty on purpose. Queue-time is where blanks are dropped.
+function daHarvestRows() {
+  return [...$("da-trows-body").querySelectorAll("tr")].map((tr) =>
+    [...tr.querySelectorAll("input[data-dacell]")].map((i) => i.value));
+}
+function renderTableGrid(rows) {
+  const cols = daCurrentCols();
+  if (!cols.length) {
+    $("da-trows-head").innerHTML = `<th class="muted">Define columns above</th>`;
+    $("da-trows-body").innerHTML = "";
+    return;
+  }
+  $("da-trows-head").innerHTML = cols.map((c) => `<th>${escapeHtml(c)}</th>`).join("");
+  if (!rows.length) rows = [Array(cols.length).fill("")];
+  $("da-trows-body").innerHTML = rows.map((r) =>
+    `<tr>${cols.map((_, i) =>
+      `<td><input type="text" data-dacell value="${escapeHtml(r[i] ?? "")}"></td>`).join("")}</tr>`).join("");
+}
+
+$("da-ttype").addEventListener("change", () => {
+  const t = TABLE_TYPES[daTableType()];
+  $("da-tcols-wrap").classList.toggle("hidden", daTableType() !== "custom");
+  $("da-ttitle").value = t.title;
+  daOutTouched = false;
+  $("da-tout").value = daTitleCase(t.title);
+  renderTableGrid(t.rows.map((r) => r.slice()));
+});
+$("da-tcols").addEventListener("change", () => renderTableGrid(daHarvestRows()));
+$("da-trow-add").addEventListener("click", () => {
+  const rows = daHarvestRows();
+  rows.push([]);
+  renderTableGrid(rows);
+});
+$("da-trow-del").addEventListener("click", () => {
+  const rows = daHarvestRows();
+  rows.pop();
+  renderTableGrid(rows);
+});
+$("da-ttitle").addEventListener("input", () => {
+  if (!daOutTouched) $("da-tout").value = daTitleCase($("da-ttitle").value);
+});
+$("da-tout").addEventListener("input", () => { daOutTouched = true; });
+
+// Seed the grid for the initially selected type.
+(function daInitTableComposer() {
+  const t = TABLE_TYPES[daTableType()];
+  $("da-ttitle").value = t.title;
+  $("da-tout").value = daTitleCase(t.title);
+  renderTableGrid(t.rows.map((r) => r.slice()));
+})();
+
+$("da-table-go").addEventListener("click", async () => {
+  if (!me || me.role !== "admin") return;
+  const projectId = $("da-tproj").value;
+  if (!projectId) return toast("Pick a project first.", "err");
+  const cols = daCurrentCols();
+  if (!cols.length) return toast("Define at least one column.", "err");
+  const rows = daHarvestRows()
+    .map((r) => cols.map((_, i) => (r[i] ?? "").trim()))
+    .filter((r) => r.some((c) => c !== ""));
+  if (!rows.length) return toast("Fill in at least one row.", "err");
+  const title = $("da-ttitle").value.trim();
+  if (!title) return toast("Give the table a title.", "err");
+  // Same bounds the runner's validateTableSpec enforces — (1, 34] and
+  // (0.5, 22] — so an out-of-range size is refused here with a sentence Ben
+  // can act on, instead of queueing a job that comes back `error` minutes later.
+  const width = parseFloat($("da-twidth").value);
+  const height = parseFloat($("da-theight").value);
+  if (!(width > 1 && width <= 34)) {
+    return toast("Width must be more than 1 in and at most 34 in (the sheet's long side).", "err");
+  }
+  if (!(height > 0.5 && height <= 22)) {
+    return toast("Height must be more than 0.5 in and at most 22 in (the sheet's short side).", "err");
+  }
+  const payload = {
+    table_type: daTableType(),
+    title,
+    columns: cols,
+    rows,
+    footnote: $("da-tfoot").value.trim(),
+    width_in: width,
+    height_in: height,
+    out_name: $("da-tout").value.trim() || daTitleCase(title),
+  };
+  $("da-table-go").disabled = true;
+  try {
+    const { data, error } = await sb.from("drawing_jobs").insert({
+      project_id: Number(projectId), kind: "table", payload,
+      upload_paths: [], messages: [], status: "queued", requested_by: me.id,
+    }).select("id");
+    if (error) return fail("Queuing the table", error);
+    if (!data || !data.length) return toast("That did not queue — nothing was written.", "warn");
+    toast("Table queued — it renders into working cad\\tables.");
+    await loadDrawingJobs();
+    syncDrawingPoll();
+  } finally {
+    $("da-table-go").disabled = false;
+  }
+});
+
+// ---- checker composer -----------------------------------------------------
+
+function daSyncCheckerMode() {
+  const compare = $("da-cmode-compare").checked;
+  $("da-subject-wrap").classList.toggle("hidden", compare);
+  $("da-compare-wrap").classList.toggle("hidden", !compare);
+  $("da-cscope-wrap").classList.toggle("hidden", compare);
+  $("da-check-go").textContent = compare ? "Queue compare" : "Queue check";
+}
+document.querySelectorAll('input[name="da-cmode"]').forEach((r) =>
+  r.addEventListener("change", daSyncCheckerMode));
+daSyncCheckerMode();
+
+$("da-check-go").addEventListener("click", async () => {
+  if (!me || me.role !== "admin") return;
+  const projectId = $("da-cproj").value;
+  if (!projectId) return toast("Pick a project first.", "err");
+  const compare = $("da-cmode-compare").checked;
+  const engines = [
+    ...($("da-eng-claude").checked ? ["claude"] : []),
+    ...($("da-eng-codex").checked ? ["codex"] : []),
+  ];
+  if (!engines.length) return toast("Pick at least one engine.", "err");
+  const notes = $("da-check-notes").value.trim();
+  const slots = [];
+  if (compare) {
+    const oldF = $("da-file-old").files[0];
+    const newF = $("da-file-new").files[0];
+    if (!oldF || !newF) return toast("A compare needs both revisions.", "err");
+    slots.push({ slot: "old", file: oldF }, { slot: "new", file: newF });
+  } else {
+    const subject = $("da-file-subject").files[0];
+    if (!subject) return toast("Attach the drawing set to check.", "err");
+    slots.push({ slot: "subject", file: subject });
+  }
+  const payload = compare
+    ? { engines, notes }
+    : { engines, scope: $("da-cscope").value, notes };
+  $("da-check-go").disabled = true;
+  try {
+    let uploads;
+    try { uploads = await daUploadFiles(slots); }
+    catch (e) { return fail("Uploading the PDFs (nothing was queued)", e); }
+    const { data, error } = await sb.from("drawing_jobs").insert({
+      project_id: Number(projectId), kind: compare ? "compare" : "check",
+      payload, upload_paths: uploads, status: "queued", messages: [],
+      requested_by: me.id,
+    }).select("id");
+    if (error) { await daRemoveUploads(uploads); return fail("Queuing the check", error); }
+    if (!data || !data.length) {
+      await daRemoveUploads(uploads);
+      return toast("That did not queue — nothing was written.", "warn");
+    }
+    $("da-file-subject").value = "";
+    $("da-file-old").value = "";
+    $("da-file-new").value = "";
+    $("da-check-notes").value = "";
+    toast(compare
+      ? "Compare queued — per-sheet pairing, then the diff and the engines."
+      : "Check queued — deterministic pass first, then the engines.");
+    await loadDrawingJobs();
+    syncDrawingPoll();
+  } finally {
+    $("da-check-go").disabled = false;
+  }
 });
 
 // ---------------------------------------------------------------- admin
