@@ -1509,9 +1509,36 @@
          Payload/results shapes mirror tools/drawing-aids-contracts.md — change
          one, change both. -->
     <section id="panel-drawing" class="hidden">
+      <!-- ONE active project for the whole module. The manifest, setup, table
+           builder and checker all inherit it — four independent pickers made it
+           possible to read project A's manifest while queuing work on B, and
+           the facts-panel race token only papered over the symptom. The select
+           in the jobs card below filters HISTORY only. -->
+      <div class="card" id="da-active-card">
+        <h2>Active project <span class="muted" id="da-active-stats"></span></h2>
+        <div class="row" id="da-active-pick">
+          <div class="field grow">
+            <label for="da-active-q">Project — everything below works on this job</label>
+            <div class="combo">
+              <input type="hidden" id="da-active">
+              <input id="da-active-q" type="text" autocomplete="off" role="combobox"
+                     aria-expanded="false" aria-autocomplete="list"
+                     placeholder="number or address">
+              <div class="combo-list hidden" id="da-active-list" role="listbox"></div>
+            </div>
+          </div>
+        </div>
+        <div class="row hidden" id="da-active-lock" style="align-items:center;gap:12px">
+          <span id="da-active-label" style="font-weight:600;font-size:1.05em"></span>
+          <button class="btn ghost sm" id="da-active-change">Change project</button>
+          <button class="btn ghost sm" id="da-active-hub">Open project hub</button>
+        </div>
+      </div>
+
       <div class="card">
-        <h2>Drawing aids <span class="muted" id="da-count"></span>
-          <select id="da-filter-proj" style="width:auto;margin-left:8px;padding:4px 8px"></select>
+        <h2>Recent drawing jobs <span class="muted" id="da-count"></span>
+          <select id="da-filter-proj" title="Filters this job history only — it does not change the active project"
+                  style="width:auto;margin-left:8px;padding:4px 8px"></select>
         </h2>
         <div class="grid-wrap">
           <table id="da-jobs-table">
@@ -1576,7 +1603,7 @@
       <div class="card" id="da-setup-card">
         <h2>Project setup <span class="muted">— assemble a template set</span></h2>
         <div class="row">
-          <div class="field grow">
+          <div class="field grow hidden" id="da-proj-field">
             <label for="da-proj-q">Project</label>
             <div class="combo">
               <input type="hidden" id="da-proj">
@@ -1681,7 +1708,7 @@
       <div class="card" id="da-table-card">
         <h2>Table builder <span class="muted">— house-style schedules</span></h2>
         <div class="row">
-          <div class="field grow">
+          <div class="field hidden grow" id="da-tproj-field">
             <label for="da-tproj-q">Project</label>
             <div class="combo">
               <input type="hidden" id="da-tproj">
@@ -1754,7 +1781,7 @@
                 Compare two revisions</label>
             </div>
           </div>
-          <div class="field grow">
+          <div class="field hidden grow" id="da-cproj-field">
             <label for="da-cproj-q">Project</label>
             <div class="combo">
               <input type="hidden" id="da-cproj">

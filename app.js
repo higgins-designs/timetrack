@@ -4187,10 +4187,48 @@ let drawingJobs = [];        // admin only; RLS returns nothing for anyone else
 let projectFacts = [];       // facts for the tab's selected project
 const daExpanded = new Set(); // job ids whose details row is open — survives the poll's re-render
 
+// ONE active project for the whole module. Four independent pickers (manifest
+// filter, setup, table builder, checker) made it possible to read project A's
+// manifest while queuing work on B — the facts-panel race token only papered
+// over the symptom. The per-tool hidden inputs stay in the DOM and are synced
+// from here, so the queue handlers (and the test harness) keep one shape.
+let daActiveProject = null;
+
+function daSetActive(id) {
+  daActiveProject = id ? String(id) : null;
+  for (const k of ["da-proj", "da-tproj", "da-cproj"]) $(k).value = daActiveProject || "";
+  $("da-active-pick").classList.toggle("hidden", Boolean(daActiveProject));
+  $("da-active-lock").classList.toggle("hidden", !daActiveProject);
+  if (daActiveProject) {
+    $("da-active").value = daActiveProject;
+    $("da-active-label").textContent = labelFor(daActiveProject);
+  } else {
+    $("da-active").value = "";
+    $("da-active-q").value = "";
+  }
+  daRenderActiveStats();
+  loadDrawingFacts();
+}
+
+function daRenderActiveStats() {
+  if (!daActiveProject) { $("da-active-stats").textContent = ""; return; }
+  const approved = projectFacts.filter((f) => f.status === "approved").length;
+  const proposed = projectFacts.filter((f) => f.status === "proposed").length;
+  const jobs = drawingJobs.filter((j) => String(j.project_id) === daActiveProject).length;
+  $("da-active-stats").textContent =
+    `— manifest ${approved} approved · ${proposed} proposed · ${jobs} job${jobs === 1 ? "" : "s"} on record`;
+}
+
 function initDrawingTab() {
+  fillProjectCombo($("da-active"), projects);
   fillProjectCombo($("da-proj"), projects);
   fillProjectCombo($("da-tproj"), projects);
   fillProjectCombo($("da-cproj"), projects);
+  $("da-active").addEventListener("change", () => daSetActive($("da-active").value));
+  $("da-active-change").addEventListener("click", () => daSetActive(null));
+  $("da-active-hub").addEventListener("click", () => {
+    if (daActiveProject) openProjectDrawer(daActiveProject);
+  });
 }
 
 async function loadDrawingTab() {
@@ -4227,7 +4265,7 @@ async function loadDrawingFacts() {
   // A designer reads the manifest; only the engineer writes it. Hiding the form
   // is courtesy — RLS is the guard.
   $("da-fact-form").classList.toggle("hidden", !isAdmin());
-  const proj = $("da-filter-proj").value;
+  const proj = daActiveProject;
   const token = ++daFactsToken;
   if (!proj) { projectFacts = []; daFactsFor = null; renderDrawingFacts(); return; }
   const { data, error } = await sb
@@ -4242,6 +4280,7 @@ async function loadDrawingFacts() {
   projectFacts = data || [];
   daFactsFor = proj;
   renderDrawingFacts();
+  daRenderActiveStats();
 }
 
 // ---- polling: clone of the letters poll -----------------------------------
@@ -4276,12 +4315,15 @@ function syncDrawingPoll() {
 // ---- project filter (the letters lt-filter-proj pattern) ------------------
 
 // Static control: attached once, never inside a render.
-$("da-filter-proj").addEventListener("change", () => {
-  renderDrawingBoard();
-  loadDrawingFacts();
-});
+// History filter only. It used to also scope the Design manifest, which made
+// one control do two conceptually different jobs — filtering job history and
+// selecting whose design data is live below.
+$("da-filter-proj").addEventListener("change", renderDrawingBoard);
 
-function setDrawingProjectFilter(id) { pickProjectOption($("da-filter-proj"), id); }
+function setDrawingProjectFilter(id) {
+  pickProjectOption($("da-filter-proj"), id);   // narrow the history too
+  daSetActive(id);                              // and lock the module onto the job
+}
 
 function renderDrawingProjectFilter() {
   const sel = $("da-filter-proj");
@@ -4537,11 +4579,11 @@ function renderDrawingFacts() {
   // filter says right now. These must never disagree.
   const proj = daFactsFor;
   $("da-facts-scope").textContent = proj
-    ? `— ${labelFor(proj)}` : "— pick a project in the filter above";
+    ? `— ${labelFor(proj)}` : "— pick the active project above";
   const box = $("da-facts-list");
   if (!proj) {
-    box.innerHTML = `<div class="empty">The design manifest is per-project — pick one in the
-      Drawing aids filter above, or open a project and use its drawer.</div>`;
+    box.innerHTML = `<div class="empty">Pick the active project at the top of this tab —
+      the manifest, setup, tables and checker all work on that one job.</div>`;
     return;
   }
   const approved = projectFacts.filter((f) => f.status === "approved");
@@ -4709,7 +4751,7 @@ $("da-opt-rr").addEventListener("change", () =>
 $("da-setup-go").addEventListener("click", async () => {
   if (!canDesign()) return;
   const projectId = $("da-proj").value;
-  if (!projectId) return toast("Pick a project first.", "err");
+  if (!projectId) return toast("Pick the active project at the top of the tab first.", "err");
   const sheets = [...document.querySelectorAll("#da-sheets [data-dasheet]:checked")]
     .map((c) => c.dataset.dasheet);
   if (!sheets.length) return toast("Check at least one sheet.", "err");
@@ -4846,7 +4888,7 @@ $("da-tout").addEventListener("input", () => { daOutTouched = true; });
 $("da-table-go").addEventListener("click", async () => {
   if (!canDesign()) return;
   const projectId = $("da-tproj").value;
-  if (!projectId) return toast("Pick a project first.", "err");
+  if (!projectId) return toast("Pick the active project at the top of the tab first.", "err");
   const cols = daCurrentCols();
   if (!cols.length) return toast("Define at least one column.", "err");
   const rows = daHarvestRows()
@@ -4908,7 +4950,7 @@ daSyncCheckerMode();
 $("da-check-go").addEventListener("click", async () => {
   if (!canDesign()) return;
   const projectId = $("da-cproj").value;
-  if (!projectId) return toast("Pick a project first.", "err");
+  if (!projectId) return toast("Pick the active project at the top of the tab first.", "err");
   const compare = $("da-cmode-compare").checked;
   const engines = [
     ...($("da-eng-claude").checked ? ["claude"] : []),
