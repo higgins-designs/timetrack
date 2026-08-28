@@ -1328,7 +1328,9 @@ async function pdLoad(id) {
                link_confidence, link_note`)
       .eq("project_id", id).order("number", { ascending: false }) : null,
     design ? sb.from("drawing_jobs")
-      .select("id, kind, status, updated_at")
+      // review_status included because the drawer renders drawingStatusHtml —
+      // without it every done job would read "Unreviewed" regardless of truth.
+      .select("id, kind, status, review_status, updated_at")
       .eq("project_id", id).order("updated_at", { ascending: false }).limit(50) : null,
   ];
   const [proj, tks, tme, vis, lts, pps, djs] = await Promise.all(
@@ -4082,6 +4084,31 @@ const EVIDENCE_TIP = {
   "two-model": "Two-model agreement — both engines flagged this independently",
 };
 
+// "Done" is a machine fact, not an engineering state (migration 0022). These
+// two vocabularies mirror the CHECK constraints on drawing_jobs.review_status
+// and finding_dispositions.disposition — registry-drift.mjs holds them to the
+// schema snapshot, so a renamed value fails a test instead of a live click.
+const DA_REVIEW_STATES = {
+  unreviewed: "Unreviewed",
+  in_review: "In review",
+  accepted: "Accepted",
+  revisions: "Revisions needed",
+  superseded: "Superseded",
+};
+const DA_DISPOSITIONS = {
+  open: "Open",
+  fixed: "Fixed",
+  accepted_as_shown: "Accepted as shown",
+  false_positive: "False positive",
+  deferred: "Deferred",
+  superseded: "Superseded",
+};
+// What a DESIGNER may write — the workflow reports. The engineering judgments
+// (accepted_as_shown, false_positive, superseded) and the 'accepted' sign-off
+// are the engineer's alone; RLS is the guard, this list only keeps the UI from
+// offering what the database will refuse. Mirrors the 0022 policies.
+const DA_DESIGNER_DISPOSITIONS = ["open", "fixed", "deferred"];
+
 // Sheet registry — mirrors tools\drawing-templates.mjs in the runner.
 // [key, title, core]; core pre-checked, extended opt-in (the letters-scopes
 // philosophy: a checkbox is a content selector someone chose on purpose).
@@ -4187,6 +4214,45 @@ let drawingJobs = [];        // admin only; RLS returns nothing for anyone else
 let projectFacts = [];       // facts for the tab's selected project
 const daExpanded = new Set(); // job ids whose details row is open — survives the poll's re-render
 
+// Engineer verdicts on individual findings, keyed job fingerprint.
+// Loaded together with the jobs; absence of an entry means "open".
+let daDispositions = new Map();
+const daFpCache = new Map();  // finding identity JSON -> sha256 hex
+
+const dispKey = (jobId, fp) => `${jobId} ${fp}`;
+
+// The ONE implementation of the finding fingerprint (the 0022 contract):
+// sha256 over the finding's content identity. Content-keyed so a re-run
+// re-attaches verdicts only to findings that came back byte-identical —
+// anything new or re-phrased starts at open, which errs in the safe
+// direction (a re-run can re-surface work, never silently resolve it).
+// ⚠️ Changing this orphans every stored disposition — the rows keep the
+// record, but the board would show all findings open again.
+async function findingFingerprint(f) {
+  const ident = JSON.stringify([f.sheet ?? "", f.page ?? 0, f.category ?? "", f.finding ?? ""]);
+  let fp = daFpCache.get(ident);
+  if (!fp) {
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(ident));
+    fp = [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    daFpCache.set(ident, fp);
+  }
+  return fp;
+}
+
+// Stamp `_fp` onto every checker finding so the render stays synchronous.
+async function annotateFindingFps(jobs) {
+  for (const j of jobs) {
+    if (j.kind !== "check" && j.kind !== "compare") continue;
+    const fs = j.results && Array.isArray(j.results.findings) ? j.results.findings : [];
+    for (const f of fs) f._fp = await findingFingerprint(f);
+  }
+}
+
+function findingDisposition(jobId, f) {
+  const row = f && f._fp ? daDispositions.get(dispKey(jobId, f._fp)) : null;
+  return row ? row.disposition : "open";
+}
+
 // ONE active project for the whole module. Four independent pickers (manifest
 // filter, setup, table builder, checker) made it possible to read project A's
 // manifest while queuing work on B — the facts-panel race token only papered
@@ -4214,9 +4280,21 @@ function daRenderActiveStats() {
   if (!daActiveProject) { $("da-active-stats").textContent = ""; return; }
   const approved = projectFacts.filter((f) => f.status === "approved").length;
   const proposed = projectFacts.filter((f) => f.status === "proposed").length;
-  const jobs = drawingJobs.filter((j) => String(j.project_id) === daActiveProject).length;
+  const mine = drawingJobs.filter((j) => String(j.project_id) === daActiveProject);
+  // Open findings across this project's completed checks. null = no completed
+  // check yet, which is a different claim than "0 open" and must not print as
+  // one; superseded reviews are out — their findings are moot by declaration.
+  let open = null;
+  for (const j of mine) {
+    if ((j.kind !== "check" && j.kind !== "compare") || j.status !== "done") continue;
+    if (j.review_status === "superseded") continue;
+    const fs = j.results && Array.isArray(j.results.findings) ? j.results.findings : [];
+    if (open === null) open = 0;
+    for (const f of fs) if (findingDisposition(j.id, f) === "open") open++;
+  }
   $("da-active-stats").textContent =
-    `— manifest ${approved} approved · ${proposed} proposed · ${jobs} job${jobs === 1 ? "" : "s"} on record`;
+    `— manifest ${approved} approved · ${proposed} proposed · ${mine.length} job${mine.length === 1 ? "" : "s"} on record` +
+    (open === null ? "" : ` · ${open} open finding${open === 1 ? "" : "s"}`);
 }
 
 function initDrawingTab() {
@@ -4237,17 +4315,54 @@ async function loadDrawingTab() {
   syncDrawingPoll();
 }
 
+// PostgREST silently caps an unranged select at max-rows (1000) with a 200 —
+// and dispositions accumulate by design (they survive job deletion and
+// re-runs), so an unpaged fetch would one day quietly render judged findings
+// as Open again. Page until a short page says the table is exhausted.
+async function fetchAllDispositions() {
+  const PAGE = 1000;
+  const all = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await sb.from("finding_dispositions")
+      .select("job_id, finding_key, disposition, note, decided_at")
+      .order("id", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) return { error };
+    all.push(...(data || []));
+    if (!data || data.length < PAGE) return { data: all };
+  }
+}
+
+// The reload race guard, same shape as daFactsToken: an in-flight poll fetch
+// that resolves AFTER a verdict was recorded must not repaint the board from
+// its pre-verdict snapshot — with the poll stopped on that tick, the stale
+// paint would stand until the next manual reload.
+let daJobsToken = 0;
+
 async function loadDrawingJobs() {
   if (!canDesign()) return;
-  const { data, error } = await sb
-    .from("drawing_jobs")
-    .select(`id, project_id, kind, payload, messages, status, outputs, results,
-             warnings, manifest, error, upload_paths, requested_by, created_at, updated_at`)
-    .order("updated_at", { ascending: false });
-  if (error) return fail("Loading drawing jobs", error);
-  drawingJobs = data || [];
+  const token = ++daJobsToken;
+  // Jobs and dispositions land together: rendering findings against a stale
+  // verdict map would briefly show closed findings as open (or worse, the
+  // other way around), so neither renders without the other.
+  const [jobsRes, dispRes] = await Promise.all([
+    sb.from("drawing_jobs")
+      .select(`id, project_id, kind, payload, messages, status, review_status, outputs, results,
+               warnings, manifest, error, upload_paths, requested_by, created_at, updated_at`)
+      .order("updated_at", { ascending: false }),
+    fetchAllDispositions(),
+  ]);
+  if (token !== daJobsToken) return;   // a newer load owns the board now
+  if (jobsRes.error) return fail("Loading drawing jobs", jobsRes.error);
+  if (dispRes.error) return fail("Loading finding dispositions", dispRes.error);
+  drawingJobs = jobsRes.data || [];
+  daDispositions = new Map((dispRes.data || []).map((d) => [dispKey(d.job_id, d.finding_key), d]));
+  await annotateFindingFps(drawingJobs);
+  if (token !== daJobsToken) return;
   await ensureLabels(drawingJobs.map((j) => j.project_id));
+  if (token !== daJobsToken) return;
   renderDrawingBoard();
+  daRenderActiveStats();
 }
 
 // The project these facts belong to, captured when the load started. The
@@ -4306,6 +4421,12 @@ function syncDrawingPoll() {
     // Re-check each tick: showTab stops the poll, but a stray timer must never
     // repaint a hidden panel.
     if ($("panel-drawing").classList.contains("hidden")) return stopDrawingPoll();
+    // Never repaint the board out from under an open control. While a queued
+    // job keeps the poll alive, an engineer can be mid-verdict on an older
+    // done job — a tick that rebuilds innerHTML closes the dropdown and drops
+    // the pick (the loadWeekPreservingFocus rule). Skip the tick; the next one
+    // lands after the click resolves and focus moves on.
+    if ($("da-jobs-body").contains(document.activeElement)) return;
     await loadDrawingJobs();       // renders the board only
     await loadDrawingFacts();      // a finished setup proposes facts; show them
     if (!drawingJobsInFlight()) stopDrawingPoll();
@@ -4348,8 +4469,16 @@ function renderDrawingProjectFilter() {
 function drawingStatusHtml(j) {
   const label = DRAWING_STATUS_LABEL[j.status] || j.status;
   const color = j.status === "error" ? "var(--err)" : j.status === "done" ? "var(--ok)" : "";
-  return `<span class="tag"${color ? ` style="color:${color};border-color:${color}"` : ""}>${
+  let html = `<span class="tag"${color ? ` style="color:${color};border-color:${color}"` : ""}>${
     escapeHtml(label)}</span>`;
+  // The engineering state rides beside the machine state, done jobs only —
+  // "Done" says the run finished, this says whether an engineer has looked.
+  if (j.status === "done") {
+    const rs = j.review_status || "unreviewed";
+    const rc = rs === "accepted" ? " ok" : rs === "revisions" ? " nb" : "";
+    html += ` <span class="tag${rc}">${escapeHtml(DA_REVIEW_STATES[rs] || rs)}</span>`;
+  }
+  return html;
 }
 
 function daManifestLine(m) {
@@ -4422,6 +4551,19 @@ function renderDrawingDetails(j) {
     }
     const findings = Array.isArray(r.findings) ? r.findings : [];
     if (findings.length) {
+      // The verdict tally first: "37 findings" and "37 findings, 2 open" are
+      // different situations and the count line is what says which one this is.
+      const tally = {};
+      for (const f of findings) {
+        const d = findingDisposition(j.id, f);
+        tally[d] = (tally[d] || 0) + 1;
+      }
+      const parts = Object.keys(DA_DISPOSITIONS)
+        .filter((d) => tally[d])
+        .map((d) => `${tally[d]} ${DA_DISPOSITIONS[d].toLowerCase()}`);
+      out.push(`<div class="small" style="margin-top:8px"><b>Findings:</b> ${
+        findings.length} · ${escapeHtml(parts.join(" · "))}</div>`);
+
       const bySheet = {};
       for (const f of findings) (bySheet[f.sheet || "(no sheet)"] ||= []).push(f);
       const sevRank = { high: 0, medium: 1, low: 2, info: 3 };
@@ -4429,21 +4571,61 @@ function renderDrawingDetails(j) {
         const list = bySheet[sheet]
           .sort((a, b) => (sevRank[a.severity] ?? 9) - (sevRank[b.severity] ?? 9));
         out.push(`<div style="margin-top:8px"><b class="small">${escapeHtml(sheet)}</b>${
-          list.map((f) => `
-            <div class="da-finding small">
+          list.map((f) => {
+            const d = findingDisposition(j.id, f);
+            const row = f._fp ? daDispositions.get(dispKey(j.id, f._fp)) : null;
+            // A judged finding stays legible but recedes; only 'open' and the
+            // deliberate parking of 'deferred' keep full weight.
+            const closed = d !== "open" && d !== "deferred";
+            // Designers get the workflow states only, and a row already
+            // carrying an engineering judgment is read-only for them — the
+            // select would be an offer the database refuses (0022 RLS).
+            const writable = isAdmin() || DA_DESIGNER_DISPOSITIONS.includes(d);
+            const options = (isAdmin()
+              ? Object.keys(DA_DISPOSITIONS) : DA_DESIGNER_DISPOSITIONS)
+              .map((v) => `<option value="${v}"${v === d ? " selected" : ""}>${
+                escapeHtml(DA_DISPOSITIONS[v])}</option>`).join("");
+            const control = !f._fp ? "" : writable
+              ? `<select class="da-disp" data-dadisp="${j.id}" data-fp="${f._fp}"
+                   title="The engineer's verdict on this finding — the runner's record above it never changes.">${options}</select>`
+              : `<span class="tag">${escapeHtml(DA_DISPOSITIONS[d] || d)}</span>`;
+            return `
+            <div class="da-finding small${closed ? " da-closed" : ""}">
               <span class="tag da-evi" title="${escapeHtml((EVIDENCE_TIP[f.evidence] || f.evidence || "") +
                 (f.engine ? ` · ${f.engine}` : ""))}">${
                 escapeHtml(EVIDENCE_BADGE[f.evidence] || f.evidence || "?")}</span>
               <span class="tag${f.severity === "high" ? " nb" : ""}">${escapeHtml(f.severity || "")}</span>
               <span class="muted">${escapeHtml(f.category || "")}</span>
-              ${escapeHtml(f.finding || "")}${
+              <span class="da-ftext">${escapeHtml(f.finding || "")}${
                 f.location ? ` <span class="muted">— ${escapeHtml(f.location)}</span>` : ""}${
-                f.page ? ` <span class="muted">· p.${escapeHtml(String(f.page))}</span>` : ""}
-            </div>`).join("")}</div>`);
+                f.page ? ` <span class="muted">· p.${escapeHtml(String(f.page))}</span>` : ""}</span>
+              ${control}${
+                row && row.note ? `<span class="muted"> — ${escapeHtml(row.note)}</span>` : ""}
+            </div>`;
+          }).join("")}</div>`);
       }
     } else if (j.status === "done") {
       out.push(`<div class="small muted" style="margin-top:6px">No findings —
         an advisory review, not a certification that the set is right.</div>`);
+    }
+  }
+  // The engineering review of the whole job, any kind. "Done" above is the
+  // machine's fact; this line records the engineer's read of it. Manual on
+  // purpose — nothing here ever auto-accepts or auto-supersedes.
+  if (j.status === "done") {
+    const rs = j.review_status || "unreviewed";
+    // An accepted job is settled: a designer can neither sign one off nor
+    // reopen one (0022 — the letters 'issued' rail), so they see a tag.
+    if (!isAdmin() && rs === "accepted") {
+      out.push(`<div class="small" style="margin-top:10px"><b>Engineering review:</b>
+        <span class="tag ok">Accepted</span></div>`);
+    } else {
+      const options = Object.entries(DA_REVIEW_STATES)
+        .filter(([v]) => isAdmin() || v !== "accepted")
+        .map(([v, label]) => `<option value="${v}"${v === rs ? " selected" : ""}>${
+          escapeHtml(label)}</option>`).join("");
+      out.push(`<div class="small" style="margin-top:10px"><b>Engineering review:</b>
+        <select data-darev="${j.id}" style="width:auto;padding:4px 8px">${options}</select></div>`);
     }
   }
   for (const w of (Array.isArray(j.warnings) ? j.warnings : [])) {
@@ -4514,6 +4696,68 @@ ${escapeHtml(o.path || "")}">${escapeHtml(o.label || (o.path || "").split("\\").
     b.addEventListener("click", () => deleteDrawingJob(Number(b.dataset.dadel))));
   $("da-jobs-body").querySelectorAll("[data-dacopy]").forEach((b) =>
     b.addEventListener("click", () => daCopyPath(b.dataset.dacopy)));
+  $("da-jobs-body").querySelectorAll("[data-dadisp]").forEach((s) =>
+    s.addEventListener("change", () =>
+      setFindingDisposition(Number(s.dataset.dadisp), s.dataset.fp, s.value)));
+  $("da-jobs-body").querySelectorAll("[data-darev]").forEach((s) =>
+    s.addEventListener("change", () =>
+      setDrawingReviewStatus(Number(s.dataset.darev), s.value)));
+}
+
+// Record the engineer's verdict on one finding, through the atomic upsert RPC
+// (0022). The finding SNAPSHOT rides along so the disposition row stays
+// self-describing after the job — or a re-run's results — are gone.
+async function setFindingDisposition(jobId, fp, value) {
+  const j = drawingJobs.find((x) => x.id === jobId);
+  const f = j && j.results && Array.isArray(j.results.findings)
+    ? j.results.findings.find((x) => x._fp === fp) : null;
+  if (!j || !f) return renderDrawingBoard();
+  let note = null;
+  if (value === "false_positive" || value === "accepted_as_shown") {
+    // These two are the record that the ENGINEER disagrees with (or overrides)
+    // the checker — a sentence of why is what makes a false positive a
+    // checker-corpus regression case later. Cancel aborts the verdict.
+    note = prompt(`${DA_DISPOSITIONS[value]} — optional note for the record` +
+      (value === "false_positive" ? " (why is the checker wrong here?)" : "") + ":");
+    if (note === null) return renderDrawingBoard();   // cancelled — revert the select
+  }
+  const snapshot = { ...f };
+  delete snapshot._fp;
+  const { data, error } = await sb.rpc("set_finding_disposition", {
+    p_job_id: jobId, p_finding_key: fp, p_disposition: value,
+    p_note: note, p_finding: snapshot,
+  });
+  if (error) { renderDrawingBoard(); return fail("Recording the disposition", error); }
+  if (!Array.isArray(data) || !data.length) {
+    renderDrawingBoard();
+    return toast("That disposition was refused — nothing was written.", "warn");
+  }
+  // Invalidate any in-flight board load: it was queried before this commit,
+  // and letting it land would repaint the verdict away (see daJobsToken).
+  daJobsToken++;
+  daDispositions.set(dispKey(jobId, fp), data[0]);
+  renderDrawingBoard();
+  daRenderActiveStats();
+}
+
+// Move the job's engineering review state. Proven from the returned row, not
+// assumed from the request — an RLS refusal comes back as zero rows, and the
+// board must snap back to the truth rather than keep the optimistic select.
+async function setDrawingReviewStatus(jobId, value) {
+  const { data, error } = await sb.from("drawing_jobs")
+    .update({ review_status: value })
+    .eq("id", jobId)
+    .select("id, review_status");
+  if (error) { await loadDrawingJobs(); return fail("Setting the review status", error); }
+  if (!Array.isArray(data) || !data.length) {
+    await loadDrawingJobs();
+    return toast("That review change was refused — nothing was written.", "warn");
+  }
+  daJobsToken++;   // an in-flight pre-commit load must not repaint this away
+  const j = drawingJobs.find((x) => x.id === jobId);
+  if (j) j.review_status = data[0].review_status;
+  renderDrawingBoard();
+  daRenderActiveStats();
 }
 
 // A page served over http cannot navigate to file:// — hand the path over

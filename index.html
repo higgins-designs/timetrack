@@ -440,6 +440,12 @@
   /* The provenance line under a fact: value — source page — extracted/engineer. */
   .da-prov { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
   .da-finding { margin: 4px 0; }
+  /* A judged finding recedes but stays legible — the TEXT dims, never the
+     verdict control beside it. 75%: the check "judged finding text (dimmed)"
+     in contrast.mjs measures the dimmed ink against AA in both themes, and
+     drafts at .55 and .70 failed light mode (3.05:1, 4.48:1). */
+  .da-closed .da-ftext { opacity: .75; }
+  .da-disp { width: auto; padding: 2px 6px; margin-left: 6px; font-size: 12px; }
   tr.da-detail td { background: var(--grey-bg); }
   /* Row cells scroll inside .grid-wrap; the min keeps a schedule cell typeable. */
   #da-trows-table input { min-width: 110px; padding: 6px 8px; }
@@ -1561,7 +1567,11 @@
           <span class="tag da-evi">2-MODEL</span> two-model agreement.
           Findings are advisory drafting observations, never a pass/fail. An
           output button copies the file path — the browser cannot open files on
-          the office machine.
+          the office machine. “Done” only means the run finished — the
+          engineering review select and the per-finding verdicts (open · fixed ·
+          accepted as shown · false positive · deferred · superseded) record
+          what the engineer made of it, and a re-run reopens anything it cannot
+          match verbatim.
         </p>
       </div>
 
