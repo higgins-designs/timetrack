@@ -1558,7 +1558,7 @@
           </table>
         </div>
         <div id="da-jobs-empty" class="empty">
-          No drawing jobs yet — queue a project setup, a table or a check below.
+          No drawing jobs yet — queue an analyze, a generate, a table or a check below.
         </div>
         <p class="small muted" style="margin:12px 0 0">
           Evidence classes on findings:
@@ -1610,8 +1610,11 @@
         </p>
       </div>
 
-      <div class="card" id="da-setup-card">
-        <h2>Project setup <span class="muted">— assemble a template set</span></h2>
+      <!-- 0024: the one-pass "Project setup" split into Analyze (file, verify,
+           propose) and Generate (assemble, prefill from APPROVED facts) — so
+           the first generated set is never a known-incomplete one. -->
+      <div class="card" id="da-analyze-card">
+        <h2>Analyze sources <span class="muted">— file, verify, propose facts</span></h2>
         <div class="row">
           <div class="field grow hidden" id="da-proj-field">
             <label for="da-proj-q">Project</label>
@@ -1623,6 +1626,33 @@
               <div class="combo-list hidden" id="da-proj-list" role="listbox"></div>
             </div>
           </div>
+          <div class="field grow">
+            <label for="da-file-arch">Architectural drawings <span class="muted">(PDF)</span></label>
+            <input id="da-file-arch" type="file" accept="application/pdf">
+          </div>
+          <div class="field grow">
+            <label for="da-file-geotech">Geotech report <span class="muted">(PDF)</span></label>
+            <input id="da-file-geotech" type="file" accept="application/pdf">
+          </div>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <div class="field grow">
+            <label for="da-analyze-notes">Notes <span class="muted">(optional)</span></label>
+            <textarea id="da-analyze-notes" rows="2"></textarea>
+          </div>
+          <button class="btn" id="da-analyze-go">Queue analyze</button>
+        </div>
+        <p class="small muted" style="margin:12px 0 0">
+          Files the PDFs into the project folder, checks the geotech cover
+          address against the project address, and proposes extracted facts
+          into the Design manifest above. <b>Writes no sheets</b> — approve the
+          proposals, then generate below.
+        </p>
+      </div>
+
+      <div class="card" id="da-generate-card">
+        <h2>Generate template set <span class="muted">— assemble + prefill from approved facts</span></h2>
+        <div class="row">
           <div class="field">
             <label for="da-kit">Sheet kit</label>
             <select id="da-kit">
@@ -1688,30 +1718,22 @@
             </div>
           </div>
         </div>
+        <p class="small" id="da-gen-ready" style="margin:10px 0 0"></p>
         <div class="row" style="margin-top:10px">
           <div class="field grow">
-            <label for="da-file-arch">Architectural drawings <span class="muted">(PDF, optional)</span></label>
-            <input id="da-file-arch" type="file" accept="application/pdf">
+            <label for="da-generate-notes">Notes <span class="muted">(optional)</span></label>
+            <textarea id="da-generate-notes" rows="2"></textarea>
           </div>
-          <div class="field grow">
-            <label for="da-file-geotech">Geotech report <span class="muted">(PDF, optional)</span></label>
-            <input id="da-file-geotech" type="file" accept="application/pdf">
-          </div>
-        </div>
-        <div class="row" style="margin-top:10px">
-          <div class="field grow">
-            <label for="da-setup-notes">Notes <span class="muted">(optional)</span></label>
-            <textarea id="da-setup-notes" rows="2"></textarea>
-          </div>
-          <button class="btn" id="da-setup-go">Queue setup</button>
+          <button class="btn" id="da-generate-go">Queue generate</button>
         </div>
         <p class="small muted" style="margin:12px 0 0">
-          The office machine files the PDFs into the project folder, checks the
-          geotech cover address against the project address, proposes extracted
-          facts into the Design manifest above, and assembles the checked sheets
-          into a bookmarked set in <code>working cad\</code>. Prefill uses
-          <b>approved</b> facts only — re-queue the job after approving to fill
-          what was still proposed.
+          Assembles the checked sheets into a bookmarked set in
+          <code>working cad\</code> and prefills the title blocks and notes
+          from <b>approved</b> facts only — nothing merely proposed appears on
+          a sheet. No uploads here: the drafting background reads the
+          architectural set a previous analyze filed, and a small verbal job
+          can skip analyze entirely — type its facts into the manifest above
+          and generate.
         </p>
       </div>
 

@@ -4071,7 +4071,12 @@ $("lt-issued").addEventListener("click", () => {
 
 // Storage-value → English, like the letters board.
 const DRAWING_STATUS_LABEL = { queued: "Queued", working: "Working", done: "Done", error: "Error" };
-const DRAWING_KIND_LABEL = { setup: "Project setup", table: "Table", check: "Check", compare: "Compare" };
+// `setup` stays for HISTORY — pre-0024 rows keep rendering; the composer no
+// longer offers it and the runner refuses a queued one with the way forward.
+const DRAWING_KIND_LABEL = {
+  setup: "Project setup", analyze: "Analyze sources", generate: "Generate set",
+  table: "Table", check: "Check", compare: "Compare",
+};
 
 // Findings vocabulary is FIXED (contracts): evidence classes, never the word
 // "confirmed". The badge TEXT carries the distinction — colour stays out of it.
@@ -4108,6 +4113,12 @@ const DA_DISPOSITIONS = {
 // are the engineer's alone; RLS is the guard, this list only keeps the UI from
 // offering what the database will refuse. Mirrors the 0022 policies.
 const DA_DESIGNER_DISPOSITIONS = ["open", "fixed", "deferred"];
+
+// The manifest keys prefill actually writes onto sheets — mirrors the
+// runner's PREFILL_FACT_KEYS (registry-drift.mjs holds them together). The
+// readiness line counts THESE, because "4 approved facts" of which zero are
+// prefillable is a promise the generate cannot keep.
+const DA_PREFILL_KEYS = ["design_pi", "soil_bearing", "note_a_natural", "note_a_limestone", "remove_replace_depth"];
 
 // Sheet registry — mirrors tools\drawing-templates.mjs in the runner.
 // [key, title, core]; core pre-checked, extended opt-in (the letters-scopes
@@ -4262,6 +4273,11 @@ let daActiveProject = null;
 
 function daSetActive(id) {
   daActiveProject = id ? String(id) : null;
+  // The OLD project's facts must not render under the new heading for even a
+  // frame — the readiness line's counts would be a claim about the wrong job.
+  // loadDrawingFacts below repopulates; until it lands the honest count is
+  // "nothing loaded yet", not the previous project's numbers.
+  projectFacts = [];
   for (const k of ["da-proj", "da-tproj", "da-cproj"]) $(k).value = daActiveProject || "";
   $("da-active-pick").classList.toggle("hidden", Boolean(daActiveProject));
   $("da-active-lock").classList.toggle("hidden", !daActiveProject);
@@ -4277,7 +4293,11 @@ function daSetActive(id) {
 }
 
 function daRenderActiveStats() {
-  if (!daActiveProject) { $("da-active-stats").textContent = ""; return; }
+  if (!daActiveProject) {
+    $("da-active-stats").textContent = "";
+    daRenderGenReady();   // clears the generate card's readiness line too
+    return;
+  }
   const approved = projectFacts.filter((f) => f.status === "approved").length;
   const proposed = projectFacts.filter((f) => f.status === "proposed").length;
   const mine = drawingJobs.filter((j) => String(j.project_id) === daActiveProject);
@@ -4295,6 +4315,34 @@ function daRenderActiveStats() {
   $("da-active-stats").textContent =
     `— manifest ${approved} approved · ${proposed} proposed · ${mine.length} job${mine.length === 1 ? "" : "s"} on record` +
     (open === null ? "" : ` · ${open} open finding${open === 1 ? "" : "s"}`);
+  daRenderGenReady();
+}
+
+// The generate card's readiness line: what prefill will ACTUALLY write, which
+// is the prefill-key subset of the manifest, not the whole manifest — a line
+// claiming "4 approved facts" of which zero are prefillable promises a filled
+// sheet the generate cannot produce. This line is the 0024 split's whole
+// pitch: generate when the manifest is ready, not before.
+function daRenderGenReady() {
+  const el = $("da-gen-ready");
+  if (!el) return;
+  if (!daActiveProject) { el.textContent = ""; return; }
+  if (!$("da-opt-prefill").checked) {
+    el.innerHTML = `<span class="muted">Prefill is unticked — the set assembles with the template's
+      own placeholders; no manifest values are written.</span>`;
+    return;
+  }
+  const approved = projectFacts.filter((f) =>
+    f.status === "approved" && DA_PREFILL_KEYS.includes(f.key)).length;
+  const proposed = projectFacts.filter((f) =>
+    f.status === "proposed" && DA_PREFILL_KEYS.includes(f.key)).length;
+  el.innerHTML = `Prefill will write <b>${approved}</b> of the ${DA_PREFILL_KEYS.length} prefillable
+    value${DA_PREFILL_KEYS.length === 1 ? "" : "s"} (Design PI, soil bearing, Note "A" embedments, R&amp;R depth).` +
+    (proposed
+      ? ` <span style="color:var(--warn)">${proposed} prefillable value${proposed === 1 ? " is" : "s are"}
+          still only PROPOSED — approve ${proposed === 1 ? "it" : "them"} on the manifest above or
+          ${proposed === 1 ? "it" : "they"} will not appear on the set.</span>`
+      : "");
 }
 
 function initDrawingTab() {
@@ -4503,17 +4551,27 @@ function renderDrawingDetails(j) {
       escapeHtml(fmtWhen(m.at))}</div>${escapeHtml(m.text || "")}</div>`);
   }
   const r = j.results || {};
-  if (j.kind === "setup") {
+  // One branch for the whole setup family: analyze writes address_check +
+  // facts_proposed, generate writes facts_used/prefilled/background, and the
+  // retired setup rows carry any mix — every line below renders only when its
+  // result is present.
+  if (j.kind === "setup" || j.kind === "analyze" || j.kind === "generate") {
     const ac = r.address_check;
     if (ac) {
       const verdict = { match: "Match", mismatch: "MISMATCH — extraction and prefill refused",
-        unreadable: "Unreadable" }[ac.verdict] || ac.verdict;
-      const color = ac.verdict === "match" ? "" :
-        ac.verdict === "mismatch" ? "var(--err)" : "var(--warn)";
+        unreadable: "Unreadable", not_applicable: "Not applicable — no geotech attached" }[ac.verdict]
+        || ac.verdict;
+      const color = ac.verdict === "mismatch" ? "var(--err)" :
+        ac.verdict === "unreadable" ? "var(--warn)" : "";
+      // The says-clause only makes sense when a geotech was actually read —
+      // an arch-only analyze rendering 'geotech says "?"' implies a check
+      // that never happened.
+      const says = ac.verdict === "not_applicable" ? "" :
+        `<span class="muted">— geotech says &quot;${escapeHtml(ac.geotech_address || "?")}&quot;,
+        project is &quot;${escapeHtml(ac.project_address || "?")}&quot;</span>`;
       out.push(`<div class="small" style="margin-top:6px"><b>Geotech address check:</b>
         <span${color ? ` style="color:${color};font-weight:700"` : ""}>${escapeHtml(verdict)}</span>
-        <span class="muted">— geotech says &quot;${escapeHtml(ac.geotech_address || "?")}&quot;,
-        project is &quot;${escapeHtml(ac.project_address || "?")}&quot;</span></div>`);
+        ${says}</div>`);
     }
     if (Array.isArray(r.facts_used) && r.facts_used.length) {
       out.push(`<div class="small" style="margin-top:6px"><b>Approved facts used:</b> ${
@@ -4653,7 +4711,7 @@ function renderDrawingBoard() {
   // claim the filtered view cannot support.
   $("da-jobs-empty").textContent = only
     ? `No drawing jobs on ${labelFor(only)}.`
-    : "No drawing jobs yet — queue a project setup, a table or a check below.";
+    : "No drawing jobs yet — queue an analyze, a generate, a table or a check below.";
   $("da-jobs-empty").classList.toggle("hidden", rows.length > 0);
   $("da-jobs-table").classList.toggle("hidden", rows.length === 0);
 
@@ -4991,18 +5049,86 @@ renderDrawingSheets();
 
 $("da-opt-rr").addEventListener("change", () =>
   $("da-rr-depth-wrap").classList.toggle("hidden", !$("da-opt-rr").checked));
+// The readiness line describes what PREFILL will do, so it follows the box.
+$("da-opt-prefill").addEventListener("change", daRenderGenReady);
 
-$("da-setup-go").addEventListener("click", async () => {
+// Analyze: files + verification + proposals, no sheets. At least one document
+// is required — an analyze with nothing attached has nothing to do, and the
+// runner would refuse it anyway; refuse it here with the reason.
+$("da-analyze-go").addEventListener("click", async () => {
+  if (!canDesign()) return;
+  const projectId = $("da-proj").value;
+  if (!projectId) return toast("Pick the active project at the top of the tab first.", "err");
+  const arch = $("da-file-arch").files[0] || null;
+  const geotech = $("da-file-geotech").files[0] || null;
+  if (!arch && !geotech) {
+    return toast("Attach the architectural set and/or the geotech report — analyze files and reads them.", "err");
+  }
+  const note = $("da-analyze-notes").value.trim();
+  $("da-analyze-go").disabled = true;
+  try {
+    let uploads;
+    try {
+      uploads = await daUploadFiles([
+        ...(arch ? [{ slot: "arch", file: arch }] : []),
+        ...(geotech ? [{ slot: "geotech", file: geotech }] : []),
+      ]);
+    } catch (e) { return fail("Uploading the PDFs (nothing was queued)", e); }
+    const { data, error } = await sb.from("drawing_jobs").insert({
+      project_id: Number(projectId), kind: "analyze", payload: {},
+      upload_paths: uploads, status: "queued",
+      messages: note ? [{ at: new Date().toISOString(), text: note }] : [],
+      requested_by: me.id,
+    }).select("id");
+    if (error) { await daRemoveUploads(uploads); return fail("Queuing the analyze", error); }
+    if (!data || !data.length) {
+      await daRemoveUploads(uploads);
+      return toast("That did not queue — nothing was written.", "warn");
+    }
+    $("da-file-arch").value = "";
+    $("da-file-geotech").value = "";
+    $("da-analyze-notes").value = "";
+    toast("Analyze queued — the office machine files, verifies and proposes facts.");
+    await Promise.all([loadDrawingJobs(), loadDrawingFacts()]);
+    syncDrawingPoll();
+  } finally {
+    $("da-analyze-go").disabled = false;
+  }
+});
+
+// Does any job on this project carry a FILED architectural set? Advisory for
+// the composer only — the runner re-derives it (latestFiledArch) and degrades
+// the background honestly if the file is gone by the time the job runs.
+function daHasFiledArch(projectId) {
+  return drawingJobs.some((j) => String(j.project_id) === String(projectId)
+    && (Array.isArray(j.upload_paths) ? j.upload_paths : [])
+      .some((u) => u?.slot === "arch" && u.filed));
+}
+
+// …and is one still IN FLIGHT? An analyze that just queued has an arch upload
+// but no filed path yet — telling its author to "run Analyze first" when they
+// just did names a wrong cause and invites a duplicate upload.
+function daHasPendingArch(projectId) {
+  return drawingJobs.some((j) => String(j.project_id) === String(projectId)
+    && (j.status === "queued" || j.status === "working")
+    && (Array.isArray(j.upload_paths) ? j.upload_paths : [])
+      .some((u) => u?.slot === "arch" && !u.filed));
+}
+
+// Generate: assemble + prefill from APPROVED facts. No uploads — the manifest
+// is the input, which is exactly what makes the first generated set complete.
+$("da-generate-go").addEventListener("click", async () => {
   if (!canDesign()) return;
   const projectId = $("da-proj").value;
   if (!projectId) return toast("Pick the active project at the top of the tab first.", "err");
   const sheets = [...document.querySelectorAll("#da-sheets [data-dasheet]:checked")]
     .map((c) => c.dataset.dasheet);
   if (!sheets.length) return toast("Check at least one sheet.", "err");
-  const arch = $("da-file-arch").files[0] || null;
-  const geotech = $("da-file-geotech").files[0] || null;
-  if ($("da-opt-background").checked && !arch) {
-    return toast("The drafting background is built from the architectural PDF — attach it or untick the option.", "err");
+  if ($("da-opt-background").checked && !daHasFiledArch(projectId)) {
+    return toast(daHasPendingArch(projectId)
+      ? "Your analyze with the arch PDF is still running — wait for it to finish filing, then queue this generate."
+      : "The drafting background reads the architectural set a previous Analyze filed — " +
+        "run Analyze with the arch PDF first, or untick the option.", "err");
   }
   const sub = (v) => Boolean(document.querySelector(`#panel-drawing [data-dasub][value="${v}"]`)?.checked);
   const obs = (v) => Boolean(document.querySelector(`#panel-drawing [data-daobs][value="${v}"]`)?.checked);
@@ -5028,35 +5154,23 @@ $("da-setup-go").addEventListener("click", async () => {
       remove_replace: { required: rr, depth: rr ? $("da-rr-depth").value.trim() : "" },
     },
   };
-  const note = $("da-setup-notes").value.trim();
-  $("da-setup-go").disabled = true;
+  const note = $("da-generate-notes").value.trim();
+  $("da-generate-go").disabled = true;
   try {
-    let uploads;
-    try {
-      uploads = await daUploadFiles([
-        ...(arch ? [{ slot: "arch", file: arch }] : []),
-        ...(geotech ? [{ slot: "geotech", file: geotech }] : []),
-      ]);
-    } catch (e) { return fail("Uploading the PDFs (nothing was queued)", e); }
     const { data, error } = await sb.from("drawing_jobs").insert({
-      project_id: Number(projectId), kind: "setup", payload,
-      upload_paths: uploads, status: "queued",
+      project_id: Number(projectId), kind: "generate", payload,
+      upload_paths: [], status: "queued",
       messages: note ? [{ at: new Date().toISOString(), text: note }] : [],
       requested_by: me.id,
     }).select("id");
-    if (error) { await daRemoveUploads(uploads); return fail("Queuing the setup", error); }
-    if (!data || !data.length) {
-      await daRemoveUploads(uploads);
-      return toast("That did not queue — nothing was written.", "warn");
-    }
-    $("da-file-arch").value = "";
-    $("da-file-geotech").value = "";
-    $("da-setup-notes").value = "";
-    toast("Setup queued — the office machine files the PDFs and assembles the set.");
-    await Promise.all([loadDrawingJobs(), loadDrawingFacts()]);
+    if (error) return fail("Queuing the generate", error);
+    if (!data || !data.length) return toast("That did not queue — nothing was written.", "warn");
+    $("da-generate-notes").value = "";
+    toast("Generate queued — the office machine assembles and prefills from approved facts.");
+    await loadDrawingJobs();
     syncDrawingPoll();
   } finally {
-    $("da-setup-go").disabled = false;
+    $("da-generate-go").disabled = false;
   }
 });
 
